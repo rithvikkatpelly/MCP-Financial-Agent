@@ -1,0 +1,17 @@
+# Secrets
+.env
+
+# Logs
+usage.log
+
+# Python
+__pycache__/
+*.pyc
+.pytest_cache/
+venv/
+.venv/
+*.egg-info/
+
+# OS/editor cruft
+.DS_Store
+.vscode/
