@@ -3,6 +3,7 @@
 
 # Logs
 usage.log
+audit.log
 
 # Python
 __pycache__/
