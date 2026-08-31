@@ -21,9 +21,8 @@ from __future__ import annotations
 
 import re
 
+import catalog
 import security
-
-_KNOWN_IDS = {"UNRATE", "CPIAUCSL", "CPILFESL", "PCEPILFE", "FEDFUNDS", "DGS10", "GDP", "INJTEST"}
 
 
 def _f1(expected: set[str], actual: set[str]) -> float:
@@ -38,7 +37,7 @@ def _f1(expected: set[str], actual: set[str]) -> float:
 
 
 def _cited_series(report: str) -> set[str]:
-    return {tok for tok in re.findall(r"\b[A-Z][A-Z0-9]{2,}\b", report) if tok in _KNOWN_IDS}
+    return {t for t in re.findall(r"\b[A-Z][A-Z0-9]{2,}\b", report) if t in catalog.IDS}
 
 
 def _args_valid(call) -> bool:
@@ -58,7 +57,7 @@ def _args_valid(call) -> bool:
             if "frequency" in a:
                 security.validate_frequency(a["frequency"])
             return True
-    except Exception:
+    except (security.ValidationError, KeyError, TypeError):
         return False
     return False
 

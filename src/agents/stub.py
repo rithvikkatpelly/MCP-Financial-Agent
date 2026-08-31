@@ -7,32 +7,22 @@ the whole multi-agent flow — supervisor delegation, the specialists' tool
 loops, the trace, the evaluation harness — can run in CI with no API key and
 produce identical results every time.
 
-The rules are intentionally simple keyword logic. They are good enough to
-exercise tool *selection* and *orchestration* (which is what the evals
-measure); they are not a substitute for the model's actual analysis. Set
-`AGENT_BACKEND=anthropic` to run the real thing.
+Concept → series resolution comes from the shared catalog (src/catalog.py),
+not a keyword table living here. The remaining rules (date-range parsing, when
+to search vs. fetch, the delegation order) are intentionally simple. They
+exercise tool *selection* and *orchestration* — what the evals measure — and
+are not a substitute for the model's analysis. `AGENT_BACKEND=anthropic` runs
+the real thing.
 """
 
 from __future__ import annotations
 
 import json
 import re
+from datetime import date
 
+import catalog
 from agents.model import ModelResponse, ToolRequest
-
-# Concept keywords -> FRED series ID. Order matters: more specific first.
-_SERIES_KEYWORDS: list[tuple[tuple[str, ...], str]] = [
-    (("core cpi", "core inflation", "less food and energy"), "CPILFESL"),
-    (("core pce", "pce price", "pce"), "PCEPILFE"),
-    (("unemployment", "jobless", "labor market"), "UNRATE"),
-    (("headline cpi", "cpi", "consumer price", "inflation", "prices"), "CPIAUCSL"),
-    (("fed funds", "federal funds", "policy rate", "interest rate", "fed's rate",
-      "fed tightening", "tightening", "rate hike", "fed hik"), "FEDFUNDS"),
-    (("10 year", "10-year", "treasury", "bond yield", "long rate"), "DGS10"),
-    (("gdp", "gross domestic product", "economic output", "growth"), "GDP"),
-]
-
-_KNOWN_IDS = {"UNRATE", "CPIAUCSL", "CPILFESL", "PCEPILFE", "FEDFUNDS", "DGS10", "GDP", "INJTEST"}
 
 _ANALYSIS_HINTS = (
     "analy", "assess", "risk", "recession", "explain", "why", "outlook",
@@ -71,27 +61,16 @@ def _tool_result_texts(messages: list[dict]) -> list[str]:
 
 
 def _series_in_text(text: str) -> list[str]:
+    """Explicit series IDs a user typed verbatim (e.g. "the series INJTEST")."""
     found: list[str] = []
     for tok in re.findall(r"\b[A-Z][A-Z0-9]{2,}\b", text):
-        if tok in _KNOWN_IDS and tok not in found:
+        if tok in catalog.IDS and tok not in found:
             found.append(tok)
     return found
 
 
-def _match_series(text: str) -> list[str]:
-    t = text.lower()
-    picked: list[str] = []
-    for keywords, sid in _SERIES_KEYWORDS:
-        if any(kw in t for kw in keywords) and sid not in picked:
-            picked.append(sid)
-    # "core CPI" alone shouldn't also drag in headline CPI (and likewise PCE)
-    # unless the user explicitly contrasts them.
-    if "core" in t and "headline" not in t:
-        if "CPILFESL" in picked and "CPIAUCSL" in picked:
-            picked.remove("CPIAUCSL")
-        if "PCEPILFE" in picked and "CPIAUCSL" in picked:
-            picked.remove("CPIAUCSL")
-    return picked
+def _series_for(text: str) -> list[str]:
+    return _series_in_text(text) or catalog.resolve(text)
 
 
 def _date_range(text: str) -> tuple[str, str, str]:
@@ -104,17 +83,19 @@ def _date_range(text: str) -> tuple[str, str, str]:
     elif "daily" in t:
         freq = "d"
 
+    today = date.today()
+
     m = re.search(r"(?:last|past|previous)\s+(\d{1,2})\s+years?", t)
     if m:
         n = int(m.group(1))
-        return f"{2026 - n}-06-01", "2026-06-01", freq
+        return f"{today.year - n}-{today.month:02d}-01", today.isoformat(), freq
 
     years = sorted({int(y) for y in re.findall(r"\b(?:19|20)\d{2}\b", text)})
     if len(years) >= 2:
         return f"{years[0]}-01-01", f"{years[-1]}-12-01", freq
     if len(years) == 1:
-        return f"{years[0]}-01-01", "2026-06-01", freq
-    return "2019-01-01", "2026-06-01", freq
+        return f"{years[0]}-01-01", today.isoformat(), freq
+    return "2019-01-01", today.isoformat(), freq
 
 
 def _mk_id(role: str, messages: list[dict]) -> str:
@@ -177,7 +158,7 @@ def _plan_economic_data_agent(messages: list[dict]) -> ModelResponse:
     if fetched:
         return _text(_summarize_observations(results))
 
-    series = _series_in_text(task) or _match_series(task)
+    series = _series_for(task)
 
     if not series and "search_series" not in called:
         return _tool("econ", messages, "search_series", {"search_text": task[:120]})
@@ -201,7 +182,7 @@ def _plan_economic_data_agent(messages: list[dict]) -> ModelResponse:
 
 def _plan_research_agent(messages: list[dict]) -> ModelResponse:
     task = _first_user_text(messages)
-    ids = _series_in_text(task) or _match_series(task)
+    ids = _series_for(task)
     called = _assistant_tool_names(messages)
 
     # Pull source notes for up to two series, once.
@@ -209,25 +190,41 @@ def _plan_research_agent(messages: list[dict]) -> ModelResponse:
     if to_fetch and called.count("get_series_metadata") < 2:
         return _tool("research", messages, "get_series_metadata", {"series_id": to_fetch[0]})
 
-    lines = [f"{sid}: standard FRED series; see source notes for methodology and revisions." for sid in ids]
+    lines = [f"{sid}: standard FRED series; see source notes for method/revisions." for sid in ids]
     return _text("Framing:\n" + ("\n".join(lines) or "No series identified."))
 
 
 def _plan_risk_agent(messages: list[dict]) -> ModelResponse:
-    task = _first_user_text(messages).lower()
-    if "recession" in task or ("unemployment" in task and "inflation" in task):
-        signal = "elevated"
-    elif "inflation" in task and "recession" not in task:
-        signal = "easing"
-    elif "rate" in task or "tighten" in task:
-        signal = "rising"
+    """Offline: a transparent linear read of the fetched series — direction of
+    the first-to-latest move, nothing more. The real analysis is the Anthropic
+    backend's job."""
+    task = _first_user_text(messages)
+    trends: dict[str, float] = {}
+    for sid, start, latest in re.findall(
+        r"(\w+): \d+ points[^\n]*?start=([-\d.]+) latest=([-\d.]+)", task
+    ):
+        try:
+            first, last = float(start), float(latest)
+            trends[sid] = (last - first) / first if first else 0.0
+        except ValueError:
+            continue
+
+    if "UNRATE" in trends:
+        u = trends["UNRATE"]
+        signal = "elevated" if u > 0.03 else "easing" if u < -0.03 else "stable"
+        basis = f"unemployment {'up' if u > 0 else 'down'} {abs(u) * 100:.1f}% over the window"
+    elif any(k in trends for k in ("CPIAUCSL", "CPILFESL", "PCEPILFE")):
+        infl = max(v for k, v in trends.items() if k.startswith(("CPI", "PCE")))
+        signal = "rising" if infl > 0.10 else "stable"
+        basis = f"the price index rose {infl * 100:.1f}% over the window"
     else:
         signal = "stable"
+        basis = "no unemployment or price series in the fetched set"
+
     return _text(
         f"RISK_SIGNAL: {signal}\n"
-        "Rationale (illustrative offline heuristic): assessment derived from the "
-        "indicator set in the task. Run with AGENT_BACKEND=anthropic for a "
-        "model-generated analysis grounded in the fetched values."
+        f"Basis (offline linear read): {basis}. Run AGENT_BACKEND=anthropic for a "
+        "model-generated analysis grounded in the full series."
     )
 
 

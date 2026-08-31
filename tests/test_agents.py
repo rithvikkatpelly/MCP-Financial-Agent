@@ -1,19 +1,18 @@
 """Multi-agent orchestration (stub backend)."""
 
-import pytest
-
 from agents import Trace
-from agents.supervisor import Supervisor, run
+from agents.supervisor import run
 
 
 def test_analytical_query_runs_the_full_chain():
-    trace = run("Analyze whether inflation and unemployment indicate rising recession risk since 2019.")
+    trace = run("Analyze whether inflation and unemployment indicate recession risk since 2019.")
     assert [d.to for d in trace.delegations] == [
         "economic_data_agent", "research_agent", "risk_agent", "report_agent"
     ]
     assert trace.leaf_tool_sequence[:1] == ["compare_series"]
     assert set(trace.series_used) == {"CPIAUCSL", "UNRATE"}
-    assert trace.risk_signal == "elevated"
+    # Signal is a linear read of the (synthetic) series, not a fixed answer.
+    assert trace.risk_signal in {"elevated", "rising", "stable", "easing"}
     assert "Evidence" in trace.final_report
 
 
@@ -45,13 +44,13 @@ def test_agent_loop_has_an_iteration_cap():
         role = "supervisor"
 
         def turn(self, system, messages, tools):
-            return ModelResponse(
-                tool_requests=[ToolRequest(id="x", name="delegate_to_report_agent", input={"task": "hi"})],
-                stop_reason="tool_use",
-            )
+            req = ToolRequest(id="x", name="delegate_to_report_agent", input={"task": "hi"})
+            return ModelResponse(tool_requests=[req], stop_reason="tool_use")
 
     trace = Trace()
-    agent = Agent("supervisor", "", [], lambda n, a: {"ok": True}, Spinner(), trace, max_iterations=3)
+    agent = Agent(
+        "supervisor", "", [], lambda n, a: {"ok": True}, Spinner(), trace, max_iterations=3
+    )
     out = agent.run("go")
     assert "iteration cap" in out
     assert len(trace.tool_calls) == 3
@@ -63,6 +62,22 @@ def test_untrusted_notes_stay_wrapped_through_the_flow():
     assert "attacker@example.com" not in lc
     assert "ignore all previous instructions" not in lc
     assert trace.series_used == ["INJTEST"]
+
+
+def test_risk_signal_is_derived_from_the_numbers_not_keywords():
+    from agents import stub
+
+    def risk(unrate_start, unrate_latest):
+        task = (
+            "Findings so far:\n"
+            f'  UNRATE: 60 points, 2019-01-01..2024-01-01, start={unrate_start} '
+            f"latest={unrate_latest}"
+        )
+        return stub._plan_risk_agent([{"role": "user", "content": task}]).text
+
+    assert "RISK_SIGNAL: elevated" in risk(5.0, 8.0)   # unemployment sharply up
+    assert "RISK_SIGNAL: easing" in risk(8.0, 4.0)     # sharply down
+    assert "RISK_SIGNAL: stable" in risk(5.0, 5.02)    # flat
 
 
 def test_trace_to_dict_is_serializable():
