@@ -1,11 +1,10 @@
-"""Shared test setup: run everything offline, hermetic, and deterministic."""
+"""Shared test setup: run everything offline, hermetic, and deterministic.
 
-import sys
-from pathlib import Path
+`src/` is put on the path by `[tool.pytest.ini_options] pythonpath` in
+pyproject.toml — no sys.path juggling here.
+"""
 
 import pytest
-
-sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
 
 
 @pytest.fixture(autouse=True)
@@ -16,10 +15,12 @@ def _hermetic(tmp_path, monkeypatch):
     monkeypatch.delenv("FRED_API_KEY", raising=False)
 
     import audit_log
+    import cost_tracker
     import fred_client
     import rate_limit
 
     fred_client._cache.clear()
     audit_log.reset()
     rate_limit.limiter.reset()
+    cost_tracker.reset_budget()
     yield

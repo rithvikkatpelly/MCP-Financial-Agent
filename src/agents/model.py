@@ -20,7 +20,18 @@ import cost_tracker
 
 # Default Claude model for live runs. Opus 5 per the project's API guidance.
 ANTHROPIC_MODEL = os.environ.get("ANTHROPIC_MODEL", "claude-opus-5")
-MAX_TOKENS = int(os.environ.get("AGENT_MAX_TOKENS", "4096"))
+MAX_TOKENS = int(os.environ.get("AGENT_MAX_TOKENS", "8000"))
+
+# Effort per role: the leaf specialists do bounded, well-specified work and run
+# at low effort to keep cost down; the supervisor and report writer get more
+# room. (output_config.effort, GA — see the claude-api guidance.)
+_EFFORT_BY_ROLE = {
+    "supervisor": "medium",
+    "report_agent": "medium",
+    "economic_data_agent": "low",
+    "research_agent": "low",
+    "risk_agent": "low",
+}
 
 
 @dataclass
@@ -68,7 +79,17 @@ class AnthropicModel(Model):
             system=system,
             messages=messages,
             tools=tools or [],
+            thinking={"type": "adaptive"},
+            output_config={"effort": _EFFORT_BY_ROLE.get(self.role, "medium")},
         )
+        if resp.stop_reason == "refusal":
+            detail = getattr(resp, "stop_details", None)
+            return ModelResponse(
+                text=f"[model refused: {getattr(detail, 'category', 'unspecified')}]",
+                stop_reason="refusal",
+                input_tokens=resp.usage.input_tokens,
+                output_tokens=resp.usage.output_tokens,
+            )
         text_parts, tool_reqs = [], []
         for block in resp.content:
             if block.type == "text":

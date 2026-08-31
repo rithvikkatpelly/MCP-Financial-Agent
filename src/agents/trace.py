@@ -70,7 +70,9 @@ class Trace:
 
     # The four real FRED tools — everything else in tool_calls is a
     # supervisor `delegate_to_*` call.
-    LEAF_TOOLS = ("search_series", "get_series_observations", "compare_series", "get_series_metadata")
+    LEAF_TOOLS = (
+        "search_series", "get_series_observations", "compare_series", "get_series_metadata",
+    )
 
     @property
     def tool_sequence(self) -> list[str]:

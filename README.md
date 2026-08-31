@@ -43,13 +43,14 @@ python examples/demo.py
 # 2. Run the evaluation suite (hermetic, deterministic):
 python -m evals            # writes evals/REPORT.md
 
-# 3. Run the tests:
-pytest -q
+# 3. Run the tests + lint:
+pytest -q && ruff check .
 ```
 
 Everything above runs with **no API key** — the orchestrator defaults to a
-deterministic offline planner and FRED calls are served from a synthetic
-fixture. For the real thing, see [Running it live](#running-it-live).
+deterministic offline planner, and FRED calls fall back to a synthetic fixture
+whenever `FRED_API_KEY` is unset. Add the keys and it uses live data and a
+real model; see [Running it live](#running-it-live).
 
 ## Demo
 
@@ -68,14 +69,14 @@ Supervisor delegated to:
 
 Tool calls:
   [economic_data_agent] compare_series({'series_ids': ['UNRATE', 'CPIAUCSL'],
-                                        'start_date': '2021-06-01',
-                                        'end_date': '2026-06-01'})  ok=True
+                                        'start_date': '2021-08-01',
+                                        'end_date': '2026-08-30'})  ok=True
   [research_agent]       get_series_metadata({'series_id': 'UNRATE'})     ok=True
   [research_agent]       get_series_metadata({'series_id': 'CPIAUCSL'})   ok=True
 
 Series grounded on: UNRATE, CPIAUCSL
-Risk signal: rising
-Tokens: 6135 in / 761 out   Wall time: 2 ms   Backend: stub
+Risk signal: easing        # offline: a linear read of the (synthetic) series
+Tokens: 6061 in / 730 out   Wall time: 2 ms   Backend: stub
 ```
 
 ## 1. Tool contracts
@@ -112,9 +113,15 @@ specialist is stateless and unit-testable.
 | Report | **none** | final grounded narrative + an Evidence section |
 
 Each agent talks to a `Model`. `AnthropicModel` is a real Claude tool-use
-turn (`claude-opus-5`); `StubModel` is a deterministic planner
-([`src/agents/stub.py`](src/agents/stub.py)) that keeps evals and CI keyless
-and reproducible. Pick with `AGENT_BACKEND=stub|anthropic`.
+turn (`claude-opus-5`, adaptive thinking, effort tuned per role); `StubModel`
+is a deterministic planner ([`src/agents/stub.py`](src/agents/stub.py)) that
+keeps evals and CI keyless and reproducible. Pick with
+`AGENT_BACKEND=stub|anthropic`.
+
+Which series a concept maps to ("core cpi" → `CPILFESL`) lives once in
+[`src/catalog.py`](src/catalog.py) — `resolve()` for precise intent,
+`search()` for looser ranking — and is shared by the offline fixture, the
+stub planner, and the eval scorer.
 
 ## 3. Evaluation
 
@@ -183,6 +190,7 @@ Highlights:
 src/
   server.py         MCP server (FastMCP): 4 tools + 1 resource, rate limit + audit
   tools.py          the one implementation of the 4 tools + Anthropic schemas
+  catalog.py        the series the project knows about: aliases, search terms, fixture shape
   fred_client.py    cached FRED wrapper + synthetic offline fixture
   cost_tracker.py   token/cost estimation + per-session budget guardrail
   security.py       input validation + untrusted-content wrapping + redaction

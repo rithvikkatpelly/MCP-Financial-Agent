@@ -1,6 +1,7 @@
 """Token-bucket rate limiter behaviour."""
 
-from rate_limit import RateLimiter, guard
+import rate_limit
+from rate_limit import RateLimiter
 
 
 class FakeClock:
@@ -28,7 +29,8 @@ def test_refill_over_time():
     clock = FakeClock()
     rl = RateLimiter(capacity=2, refill_per_sec=1.0, clock=clock)
 
-    rl.check("k"); rl.check("k")
+    rl.check("k")
+    rl.check("k")
     assert rl.check("k")[0] is False
 
     clock.advance(1.0)  # one token back
@@ -46,16 +48,18 @@ def test_keys_are_independent():
 
 
 def test_guard_returns_structured_error(monkeypatch):
-    monkeypatch.setenv("TOOL_RATE_LIMIT_PER_MIN", "60")
-    monkeypatch.setenv("TOOL_RATE_LIMIT_BURST", "1")
-    import importlib
-
-    import rate_limit
-    importlib.reload(rate_limit)
+    clock = FakeClock()
+    monkeypatch.setattr(rate_limit, "limiter", RateLimiter(1, 1.0, clock=clock))
 
     assert rate_limit.guard("client", "search_series") is None
     rejected = rate_limit.guard("client", "search_series")
     assert rejected["error"] == "rate_limited"
-    assert "retry_after_seconds" in rejected
+    assert rejected["retry_after_seconds"] > 0
 
-    importlib.reload(rate_limit)  # restore module-level limiter for other tests
+
+def test_guard_keys_client_and_tool_separately(monkeypatch):
+    monkeypatch.setattr(rate_limit, "limiter", RateLimiter(1, 1.0, clock=FakeClock()))
+    assert rate_limit.guard("a", "search_series") is None
+    assert rate_limit.guard("a", "compare_series") is None  # different tool
+    assert rate_limit.guard("b", "search_series") is None   # different client
+    assert rate_limit.guard("a", "search_series") is not None

@@ -13,7 +13,17 @@ import os
 import sys
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
+_ROOT = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(_ROOT / "src"))
+
+try:
+    from dotenv import load_dotenv
+
+    load_dotenv(_ROOT / ".env")
+except ModuleNotFoundError:
+    pass
+
+# Offline unless .env / the environment explicitly opts into live data.
 os.environ.setdefault("FRED_OFFLINE", "1")
 
 from agents import Trace  # noqa: E402

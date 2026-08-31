@@ -41,7 +41,7 @@ def validate_date_range(start_date: str, end_date: str, max_years: int = 25) -> 
         start = datetime.strptime(start_date, "%Y-%m-%d").date()
         end = datetime.strptime(end_date, "%Y-%m-%d").date()
     except ValueError as e:
-        raise ValidationError(f"Dates must be in YYYY-MM-DD format: {e}")
+        raise ValidationError(f"Dates must be in YYYY-MM-DD format: {e}") from e
 
     if start > end:
         raise ValidationError("start_date must be before end_date.")

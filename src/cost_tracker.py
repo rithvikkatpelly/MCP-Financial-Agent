@@ -56,6 +56,14 @@ class SessionBudget:
 budget = SessionBudget()
 
 
+def reset_budget() -> None:
+    """Start a fresh session budget. The evaluation harness calls this between
+    cases so one case's spend can't push the next over the limit; tests use it
+    for isolation."""
+    global budget
+    budget = SessionBudget()
+
+
 def guard_or_shrink(tool_name: str, payload: str, shrink_fn=None) -> tuple[str, dict]:
     """
     Check a would-be tool result against the session budget before

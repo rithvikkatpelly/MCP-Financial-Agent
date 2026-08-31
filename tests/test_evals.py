@@ -1,6 +1,6 @@
 """The evaluation harness itself: it loads, runs, scores, and reports."""
 
-from evals import metrics, report, runner
+from evals import report, runner
 
 
 def test_dataset_loads_and_is_well_formed():

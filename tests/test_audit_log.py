@@ -1,7 +1,6 @@
 """Audit log records events, redacts secrets, and never raises."""
 
 import json
-import os
 
 import audit_log
 import tools

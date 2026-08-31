@@ -42,7 +42,7 @@ _DELEGATION_SCHEMAS = [
             "properties": {
                 "task": {
                     "type": "string",
-                    "description": "Self-contained instructions plus any findings from earlier agents.",
+                    "description": "Self-contained instructions plus earlier agents' findings.",
                 }
             },
             "required": ["task"],

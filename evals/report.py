@@ -5,7 +5,7 @@ Aggregate a `Suite` into headline numbers and a Markdown report.
 from __future__ import annotations
 
 import statistics
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 from evals.runner import CaseResult, Suite
 
@@ -28,13 +28,14 @@ def aggregate(suite: Suite) -> dict:
 
     n = len(suite.results)
     passed = sum(1 for r in suite.results if r.passed)
+    mean_latency = statistics.mean(r.elapsed_ms for r in suite.results) if n else 0.0
     return {
         "backend": suite.backend,
         "n_cases": n,
         "pass_rate": round(passed / n, 4) if n else 0.0,
         "passed": passed,
         "metrics": per_metric,
-        "mean_latency_ms": round(statistics.mean(r.elapsed_ms for r in suite.results), 1) if n else 0,
+        "mean_latency_ms": round(mean_latency, 1),
         "total_input_tokens": sum(r.input_tokens for r in suite.results),
         "total_output_tokens": sum(r.output_tokens for r in suite.results),
         "projected_total_cost_usd": round(sum(r.projected_cost_usd for r in suite.results), 4),
@@ -53,7 +54,7 @@ def _case_row(r: CaseResult) -> str:
 
 def to_markdown(suite: Suite) -> str:
     agg = aggregate(suite)
-    ts = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
+    ts = datetime.now(UTC).strftime("%Y-%m-%d %H:%M UTC")
     metric_lines = "\n".join(
         f"| {m.replace('_', ' ')} | {agg['metrics'][m] * 100:.1f}% |"
         for m in _METRIC_ORDER

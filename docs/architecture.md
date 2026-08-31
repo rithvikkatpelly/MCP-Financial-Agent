@@ -19,9 +19,13 @@ Claude Desktop ───MCP──▶ │  server.py (FastMCP)      │
                         ┌───────────────────────────┐
                         │  fred_client.py           │
                         │   cache · offline fixture │
-                        └───────────────────────────┘
-                                     ▲
+                        └────────────┬──────────────┘
                                      │
+                        ┌────────────┴──────────────┐
+                        │  catalog.py               │  ← which series exist,
+                        │   aliases · search terms  │     shared by fixture,
+                        └───────────────────────────┘     stub planner, evals
+                                     ▲
                         ┌────────────┴──────────────┐
 User query ───────────▶ │  agents/ (orchestrator)   │
                         └───────────────────────────┘

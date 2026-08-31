@@ -10,9 +10,9 @@ import os
 from dataclasses import dataclass, field
 from pathlib import Path
 
+import cost_tracker
 from agents import Trace
 from agents.supervisor import Supervisor
-
 from evals import metrics
 
 DATASET = Path(__file__).resolve().parent / "dataset.jsonl"
@@ -56,6 +56,7 @@ def load_cases(path: Path = DATASET) -> list[dict]:
 
 
 def run_case(case: dict) -> CaseResult:
+    cost_tracker.reset_budget()  # each case gets its own session budget
     trace = Trace()
     Supervisor(trace).run(case["query"])
     scores = metrics.score_case(case, trace)

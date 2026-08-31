@@ -17,6 +17,8 @@ jobs:
         with:
           python-version: ${{ matrix.python-version }}
       - run: pip install -r requirements.txt
+      - name: Lint
+        run: ruff check .
       - name: Unit + integration tests
         run: pytest -q
       - name: Evaluation suite (stub backend, hermetic)

@@ -3,7 +3,7 @@
 import sys
 from pathlib import Path
 
-from evals import report, runner
+from evals import report, runner  # evals/__init__ puts src/ on the path
 
 
 def main() -> int:
@@ -12,7 +12,7 @@ def main() -> int:
 
     out = Path(__file__).resolve().parent / "REPORT.md"
     out.write_text(report.to_markdown(suite))
-    print(f"\nwrote {out.relative_to(Path.cwd()) if out.is_relative_to(Path.cwd()) else out}")
+    print(f"\nwrote {out}")
 
     # Non-zero exit if any case regressed, so CI fails loudly.
     failed = [r.id for r in suite.results if not r.passed]

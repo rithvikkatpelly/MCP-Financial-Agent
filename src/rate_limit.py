@@ -54,7 +54,9 @@ class RateLimiter:
                 return True, 0.0
 
             deficit = 1.0 - b.tokens
-            return False, round(deficit / self.refill_per_sec, 3) if self.refill_per_sec else float("inf")
+            if not self.refill_per_sec:
+                return False, float("inf")
+            return False, round(deficit / self.refill_per_sec, 3)
 
     def reset(self) -> None:
         with self._lock:

@@ -9,14 +9,9 @@ assertable. Two things are tested:
      could be misread as an instruction.
 """
 
-import sys
-from pathlib import Path
-
 import pytest
 
-sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
-
-from security import (  # noqa: E402
+from security import (
     ValidationError,
     validate_date_range,
     validate_frequency,

@@ -1,0 +1,28 @@
+[project]
+name = "econ-data-agent"
+version = "0.2.0"
+description = "MCP server + multi-agent orchestration over FRED economic data"
+requires-python = ">=3.11"
+readme = "README.md"
+
+# Runtime + dev dependencies are pinned in requirements.txt (what the README
+# and CI install). This file carries project metadata and tool config only.
+
+[tool.pytest.ini_options]
+pythonpath = ["src"]
+testpaths = ["tests"]
+addopts = "-q"
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+extend-exclude = [".venv"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "SIM"]
+
+[tool.ruff.lint.per-file-ignores]
+# Deliberate: catalog data + docstring prose use characters ruff flags as
+# ambiguous, and the agent packages re-export names for convenience.
+"src/agents/__init__.py" = ["E402", "F401"]
+"evals/__init__.py" = ["E402"]
