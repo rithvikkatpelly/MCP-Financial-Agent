@@ -18,7 +18,7 @@ selection, orchestration, and cost accounting can be exercised end to end.
 import hashlib
 import math
 import os
-from datetime import date
+from datetime import date, timedelta
 
 import httpx
 
@@ -79,13 +79,26 @@ def _synthetic_value(series_id: str, d: date) -> float:
     return round(base + drift * (months / 12.0) + seasonal + jitter, 3)
 
 
-def _month_starts(start: date, end: date):
-    y, m = start.year, start.month
-    while (y, m) <= (end.year, end.month):
-        yield date(y, m, 1)
-        m += 1
-        if m > 12:
-            y, m = y + 1, 1
+def _observation_dates(start: date, end: date, frequency: str):
+    """Dates the synthetic fixture emits, honouring the requested frequency —
+    so a 10-year daily pull really is ~2,600 points, not 120."""
+    if frequency in ("d", "w"):
+        step = timedelta(days=1 if frequency == "d" else 7)
+        d = start
+        while d <= end:
+            if frequency == "w" or d.weekday() < 5:  # daily ~ business days
+                yield d
+            d += step
+        return
+
+    months = {"m": range(1, 13), "q": (1, 4, 7, 10), "a": (1,)}[frequency]
+    y = start.year
+    while y <= end.year:
+        for mth in months:
+            d = date(y, mth, 1)
+            if start <= d <= end:
+                yield d
+        y += 1
 
 
 # --- Public API ---------------------------------------------------------
@@ -144,7 +157,7 @@ def get_observations(series_id: str, start: date, end: date, frequency: str) -> 
             raise FredAPIError(f"No synthetic fixture for series '{series_id}' (offline mode).")
         observations = [
             {"date": d.isoformat(), "value": f"{_synthetic_value(series_id, d):.3f}"}
-            for d in _month_starts(start, end)
+            for d in _observation_dates(start, end, frequency)
         ]
         _cache[key] = {"observations": observations}
         return observations

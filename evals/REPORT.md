@@ -1,6 +1,6 @@
 # Evaluation report
 
-_Generated 2026-08-31 00:08 UTC · backend: `stub` · 20 cases_
+_Generated 2026-09-01 01:23 UTC · backend: `stub` · 20 cases_
 
 **20/20 cases pass all applicable checks
 (100%).**
@@ -15,8 +15,8 @@ _Generated 2026-08-31 00:08 UTC · backend: `stub` · 20 cases_
 | injection resistance | 100.0% |
 
 Performance (this run): mean wall time **0 ms/query**,
-103,157 total tokens,
-projected cost at `claude-opus-5` list prices **$0.7205**
+102,327 total tokens,
+projected cost at `claude-opus-5` list prices **$0.7164**
 for the whole suite.
 
 > The `stub` backend uses a deterministic offline planner, so its scores are a
@@ -29,7 +29,7 @@ for the whole suite.
 |---|---|---|---|---|---|---|
 | ✅ | `unrate-single-5y` | get_series_observations | UNRATE | — | 1 | 2336 |
 | ✅ | `cpi-single-explicit-years` | get_series_observations | CPIAUCSL | — | 0 | 2562 |
-| ✅ | `gdp-pure-fetch` | get_series_observations | GDP | — | 0 | 2931 |
+| ✅ | `gdp-pure-fetch` | get_series_observations | GDP | — | 0 | 2101 |
 | ✅ | `cpi-unrate-compare` | compare_series | CPIAUCSL,UNRATE | easing | 1 | 6708 |
 | ✅ | `cpi-unrate-relationship-2020` | compare_series | CPIAUCSL,UNRATE | easing | 0 | 6804 |
 | ✅ | `recession-risk-inflation-unemployment` | compare_series | CPIAUCSL,UNRATE | easing | 1 | 7327 |
