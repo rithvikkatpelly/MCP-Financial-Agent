@@ -67,7 +67,10 @@ python examples/demo.py
 # 2. Run the evaluation suite (hermetic, deterministic) — writes evals/REPORT.md:
 python -m evals
 
-# 3. Tests + lint:
+# 3. Regenerate the context/cost measurements — writes docs/measurements.md:
+python examples/measure.py
+
+# 4. Tests + lint:
 pytest -q && ruff check .
 ```
 
@@ -288,8 +291,21 @@ Same loop code either way; select with `AGENT_BACKEND=stub|anthropic`.
   The budget is reset per eval case so one case can't starve the next.
 - **Per-role effort.** Leaf specialists run at `effort: "low"`; only the
   supervisor and report writer get `"medium"`. Cheap work stays cheap.
-- **Measured.** Every tool result's estimated cost is appended to `usage.log`,
-  and the eval report projects a whole-suite cost at list prices.
+
+**Measured** — `python examples/measure.py` regenerates
+[`docs/measurements.md`](docs/measurements.md) from the offline fixture.
+Highlights (token counts are the project's ~4-chars/token estimate):
+
+| Lever | Effect |
+|---|---|
+| Requiring bounds + monthly default | `CPIAUCSL` 2y monthly ≈ **290 tok** vs. `DGS10` 10y *daily* ≈ **27,000 tok** — the tools won't let a query pull the second by accident |
+| Shrink fallback (25y series, 900-tok budget) | 300 points → 26, ≈ 3,300 tok → **≈ 340 tok**, call still returns with a note |
+| Budget refusal (4 series × 25y, 200-tok budget) | ≈ 12,900-tok payload becomes a **≈ 40-tok** structured `session_budget_exceeded` |
+| Idempotent cache | 5 tool calls, 2 distinct series → **2 fetches**, 3 served from cache |
+| Prompt-cache-eligible prefix | tool schemas + all 5 system prompts ≈ **1,090 tok**, byte-identical every turn → ~90% cheaper on the cached portion after turn 1 |
+
+Every tool result's estimated cost is also appended to `usage.log`, and the
+eval report projects a whole-suite cost at `claude-opus-5` list prices.
 
 ### 5. Security
 
@@ -480,9 +496,13 @@ evals/
   metrics.py        the six scored metrics
   report.py         aggregate → REPORT.md, non-zero exit on regression
   REPORT.md         last generated run (committed as a snapshot)
-examples/demo.py    one question, whole flow printed
-tests/              catalog, security, rate limit, audit, agents, evals — hermetic, ~0.1s
-docs/architecture.md   diagrams + the guardrail-by-layer table
+examples/
+  demo.py           one question, whole flow printed
+  measure.py        regenerates docs/measurements.md from the offline fixture
+tests/              catalog, fred client, security, rate limit, audit, agents, evals — hermetic, ~0.1s
+docs/
+  architecture.md   diagrams + the guardrail-by-layer table
+  measurements.md   generated context/cost numbers
 ```
 
 ---
@@ -490,7 +510,7 @@ docs/architecture.md   diagrams + the guardrail-by-layer table
 ## Testing
 
 ```bash
-pytest -q          # 48 tests, no network, deterministic, ~0.1s
+pytest -q          # 55 tests, no network, deterministic, ~0.1s
 ruff check .       # lint (config in pyproject.toml)
 python -m evals    # the eval suite is also a test (test_evals.py runs it)
 ```
