@@ -4,6 +4,7 @@
 # Logs
 usage.log
 audit.log
+agent_trace.log
 
 # Python
 __pycache__/

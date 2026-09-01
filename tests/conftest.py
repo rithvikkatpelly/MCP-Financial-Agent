@@ -12,6 +12,7 @@ def _hermetic(tmp_path, monkeypatch):
     monkeypatch.setenv("FRED_OFFLINE", "1")
     monkeypatch.setenv("AGENT_BACKEND", "stub")
     monkeypatch.setenv("AUDIT_LOG_PATH", str(tmp_path / "audit.log"))
+    monkeypatch.setenv("AGENT_TRACE_PATH", str(tmp_path / "agent_trace.log"))
     monkeypatch.delenv("FRED_API_KEY", raising=False)
 
     import audit_log

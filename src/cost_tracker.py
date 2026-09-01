@@ -97,3 +97,43 @@ def guard_or_shrink(tool_name: str, payload: str, shrink_fn=None) -> tuple[str, 
         "suggestion": "Narrow the date range, reduce the number of series, "
                        "or start a new session.",
     }
+
+
+# --- Per-stage cost accounting (multi-agent pipeline) --------------------
+#
+# The orchestration layer logs an estimated cost for every agent hand-off.
+# These are modelled numbers (the ~4-chars/token heuristic above, priced at
+# claude-opus-5 list rates) so the trace has a cost column even when the
+# pipeline runs fully offline.
+
+INPUT_USD_PER_MTOK = 5.0
+OUTPUT_USD_PER_MTOK = 25.0
+
+
+@dataclass
+class StageCost:
+    stage: str
+    input_tokens: int
+    output_tokens: int
+
+    @property
+    def usd(self) -> float:
+        return round(
+            self.input_tokens / 1_000_000 * INPUT_USD_PER_MTOK
+            + self.output_tokens / 1_000_000 * OUTPUT_USD_PER_MTOK,
+            6,
+        )
+
+    def as_dict(self) -> dict:
+        return {
+            "stage": self.stage,
+            "input_tokens": self.input_tokens,
+            "output_tokens": self.output_tokens,
+            "estimated_usd": self.usd,
+        }
+
+
+def stage_cost(stage: str, sent: str, produced: str) -> StageCost:
+    """Estimate the token cost of one agent turn from what it was sent and
+    what it produced (both already serialized to strings)."""
+    return StageCost(stage, estimate_tokens(sent), estimate_tokens(produced))
