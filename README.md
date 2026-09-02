@@ -307,6 +307,27 @@ Highlights (token counts are the project's ~4-chars/token estimate):
 Every tool result's estimated cost is also appended to `usage.log`, and the
 eval report projects a whole-suite cost at `claude-opus-5` list prices.
 
+**Parallel multi-series fetches.** When a query needs several series
+(`"Compare CPI, unemployment, and the 10-year treasury rate…"`), the
+orchestrator's plan carries one `FetchRequest` per series and
+`orchestration.run_query` runs **one Data Agent per series concurrently**
+(`asyncio.gather` over `asyncio.to_thread`, since the FRED client is sync).
+Measured with a simulated 150 ms/call latency
+(`python examples/bench_parallel.py`, two calls per series — observations +
+metadata):
+
+| Series in query | Sequential | Parallel | Speed-up |
+|---|---|---|---|
+| 1 | 320 ms | 314 ms | 1.0× |
+| 2 | 621 ms | 314 ms | 2.0× |
+| 3 | 926 ms | 315 ms | 2.9× |
+
+A single-series query is just a batch of length 1 — same code path, no
+overhead. One Data Agent failing (bad series ID, FRED error) doesn't abort the
+run: the others complete and the final answer notes which series failed and
+why. Cost from every parallel Data Agent call is summed into the one
+`cost_tracker.RunCost` for the run.
+
 ### 5. Security
 
 Threat model: the caller (a model, or whatever drives it) is untrusted, and

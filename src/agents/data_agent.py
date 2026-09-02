@@ -1,22 +1,25 @@
 """
 Data Agent — the only agent in the pipeline with tool access.
 
-It takes the Orchestrator's `QueryPlan` and, for each `FetchRequest`, calls
-the existing MCP tools (`tools.call_tool`) — it never re-implements their
-logic. Output is a strict `DataAgentResult`: structured series data, not
-conversation text.
+One `DataAgent` instance is responsible for exactly one `FetchRequest` (one
+series). The orchestration layer creates one per request in the plan and, for
+a multi-series query, runs them concurrently (`fetch_all(..., parallel=True)`
+→ `asyncio.gather` over `asyncio.to_thread`, since the FRED client is sync).
 
-Untrusted content: `tools.get_series_metadata` already wraps the FRED `notes`
-field via `security.wrap_untrusted_text`. This agent verifies that wrapping
-survived and re-applies it defensively, so the provenance label can't be lost
-in the hand-off to the Analysis Agent.
+Each instance calls the existing MCP tools (`tools.call_tool`) — it never
+re-implements their logic — and returns a strict `DataAgentResult` for its one
+series. `_ensure_wrapped_notes` keeps the FRED `notes` field inside the
+`security.wrap_untrusted_text` envelope so the provenance label survives the
+hand-off to the Analysis Agent.
 
-Errors are collected onto the result (`SeriesData.error`, `DataAgentResult.errors`),
-never raised.
+Errors are collected onto the result (`SeriesData.error`,
+`DataAgentResult.error`), never raised — one bad series never kills the batch.
 """
 
 from __future__ import annotations
 
+import asyncio
+import time
 from dataclasses import dataclass, field
 
 import security
@@ -45,16 +48,61 @@ class SeriesData:
 
 @dataclass
 class DataAgentResult:
-    plan: QueryPlan
-    series: list[SeriesData] = field(default_factory=list)
-    errors: list[str] = field(default_factory=list)
+    """The output of one Data Agent instance — one series."""
+
+    request: FetchRequest
+    series: SeriesData | None = None
+    error: str | None = None  # request-level failure (the agent couldn't run at all)
+
+    @property
+    def series_id(self) -> str:
+        return self.request.series_id
 
     @property
     def ok(self) -> bool:
-        return bool(self.series) and any(s.error is None for s in self.series)
+        return self.error is None and self.series is not None and self.series.error is None
 
-    def series_by_id(self, series_id: str) -> SeriesData | None:
-        return next((s for s in self.series if s.series_id == series_id), None)
+    @property
+    def failure_reason(self) -> str | None:
+        if self.error:
+            return self.error
+        if self.series and self.series.error:
+            return self.series.error
+        return None
+
+
+@dataclass
+class DataFetchBatch:
+    """The results of running every Data Agent for one plan, in request order,
+    plus timing/concurrency info for inspection."""
+
+    results: list[DataAgentResult]
+    agents: list[DataAgent]
+    wall_seconds: float
+    parallel: bool
+
+    @property
+    def overlapped(self) -> bool:
+        """True if any two agents' execution windows overlapped in time — i.e.
+        they really did run concurrently, not one after another."""
+        windows = sorted(
+            (a.started_at, a.finished_at)
+            for a in self.agents
+            if a.started_at is not None and a.finished_at is not None
+        )
+        return any(windows[i][1] > windows[i + 1][0] for i in range(len(windows) - 1))
+
+    @property
+    def ok_results(self) -> list[DataAgentResult]:
+        return [r for r in self.results if r.ok]
+
+    @property
+    def failures(self) -> list[dict]:
+        return [
+            {"series_id": r.series_id, "reason": r.failure_reason}
+            for r in self.results
+            if not r.ok
+        ]
 
 
 def _ensure_wrapped_notes(metadata: dict) -> dict:
@@ -71,6 +119,7 @@ def _ensure_wrapped_notes(metadata: dict) -> dict:
 
 
 def _fetch_one(req: FetchRequest) -> SeriesData:
+    """Blocking fetch for one series via the existing MCP tools."""
     data = SeriesData(
         series_id=req.series_id,
         start_date=req.start_date,
@@ -84,11 +133,11 @@ def _fetch_one(req: FetchRequest) -> SeriesData:
         )
         if meta.get("error"):
             data.error = f"metadata: {meta['error']}"
-        else:
-            data.title = meta.get("title", "")
-            data.units = meta.get("units", "")
-            data.frequency = meta.get("frequency", req.frequency)
-            data.metadata = _ensure_wrapped_notes(meta)
+            return data  # a bad series ID fails here — don't bother fetching data
+        data.title = meta.get("title", "")
+        data.units = meta.get("units", "")
+        data.frequency = meta.get("frequency", req.frequency)
+        data.metadata = _ensure_wrapped_notes(meta)
 
     if req.fetch_observations:
         obs = tools.call_tool(
@@ -109,18 +158,60 @@ def _fetch_one(req: FetchRequest) -> SeriesData:
     return data
 
 
-def fetch(plan: QueryPlan) -> DataAgentResult:
-    """Run every FetchRequest in the plan (sequentially in phase 1). Cost is
-    accounted for by the orchestration layer, not here."""
+class DataAgent:
+    """One instance ↔ one series. Independent of every other instance."""
+
+    def __init__(self, request: FetchRequest):
+        self.request = request
+        self.started_at: float | None = None
+        self.finished_at: float | None = None
+
+    async def run(self) -> DataAgentResult:
+        self.started_at = time.monotonic()
+        try:
+            series = await asyncio.to_thread(_fetch_one, self.request)
+            result = DataAgentResult(request=self.request, series=series)
+        except Exception as exc:  # never let one agent's crash kill the gather
+            result = DataAgentResult(
+                request=self.request, error=f"data_agent_exception: {exc}"
+            )
+        self.finished_at = time.monotonic()
+        return result
+
+    @property
+    def elapsed(self) -> float:
+        if self.started_at is not None and self.finished_at is not None:
+            return self.finished_at - self.started_at
+        return 0.0
+
+
+async def _gather(agents: list[DataAgent], *, parallel: bool) -> list[DataAgentResult]:
+    if parallel:
+        return list(await asyncio.gather(*(a.run() for a in agents)))
+    return [await a.run() for a in agents]
+
+
+def fetch_all(plan: QueryPlan, *, parallel: bool = True) -> DataFetchBatch:
+    """Run one Data Agent per FetchRequest and collect the results in request
+    order. `parallel=True` runs them concurrently; `parallel=False` is the same
+    code path, one at a time (used to benchmark the difference).
+
+    A single-series plan is just a batch of length 1 — identical behaviour to
+    the sequential phase-1 pipeline.
+    """
     if not plan.ok:
-        return DataAgentResult(plan=plan, errors=[plan.error or "invalid_plan"])
+        bad = FetchRequest(series_id="", start_date="", end_date="")
+        return DataFetchBatch(
+            results=[DataAgentResult(request=bad, error=plan.error or "invalid_plan")],
+            agents=[],
+            wall_seconds=0.0,
+            parallel=parallel,
+        )
 
-    series: list[SeriesData] = []
-    errors: list[str] = []
-    for req in plan.fetches:
-        sd = _fetch_one(req)
-        series.append(sd)
-        if sd.error:
-            errors.append(f"{sd.series_id}: {sd.error}")
-
-    return DataAgentResult(plan=plan, series=series, errors=errors)
+    agents = [DataAgent(req) for req in plan.fetches]
+    started = time.monotonic()
+    results = asyncio.run(_gather(agents, parallel=parallel))
+    wall = time.monotonic() - started
+    return DataFetchBatch(
+        results=results, agents=agents, wall_seconds=wall, parallel=parallel
+    )

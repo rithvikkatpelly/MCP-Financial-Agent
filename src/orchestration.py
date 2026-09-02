@@ -1,17 +1,22 @@
 """
-The phase-1 pipeline, wired end to end.
+The multi-agent pipeline, wired end to end.
 
     run_query(user_query)
-        → orchestrator.plan_query   (NL query        → QueryPlan)
-        → data_agent.fetch          (QueryPlan       → DataAgentResult)
-        → analysis_agent.analyze    (DataAgentResult → AnalysisResult)
+        → orchestrator.plan_query   (NL query → QueryPlan, 1..N FetchRequests)
+        → data_agent.fetch_all      (QueryPlan → one Data Agent per series,
+                                     run concurrently, → [DataAgentResult])
+        → analysis_agent.analyze    ([DataAgentResult] → AnalysisResult)
         → PipelineResult
 
-Sequential, no parallelism. Every hand-off passes a typed dataclass — never
-raw strings or conversation history. For each stage the orchestration layer
-records the input, the output, and an estimated cost into a single
-`cost_tracker.RunCost` for the whole run; the per-stage trace is also
-appended to `agent_trace.log` (git-ignored) for inspection afterward.
+Every hand-off passes a typed dataclass — never raw strings or conversation
+history. For each stage the orchestration layer records the input, the
+output, an estimated cost (into one `cost_tracker.RunCost` for the whole run),
+and wall time. The per-stage trace is also appended to `agent_trace.log`
+(git-ignored) for inspection afterward.
+
+Partial failure: if some Data Agents fail (bad series ID, FRED error) but at
+least one succeeds, the run still completes on the successful results and the
+final answer notes which series failed and why.
 """
 
 from __future__ import annotations
@@ -40,17 +45,21 @@ class StageTrace:
     stage: str
     input_summary: str
     output_summary: str
-    cost: dict  # this stage's StageCost.as_dict()
+    cost: dict          # this stage's StageCost.as_dict()
+    wall_seconds: float
+    calls: int = 1      # >1 for the parallel Data Agent stage
 
 
 @dataclass
 class PipelineResult:
     user_query: str
     plan: QueryPlan | None = None
-    data: DataAgentResult | None = None
+    data: list[DataAgentResult] = field(default_factory=list)
     analysis: AnalysisResult | None = None
     trace: list[StageTrace] = field(default_factory=list)
     run_cost: cost_tracker.RunCost = field(default_factory=cost_tracker.RunCost)
+    wall_seconds: float = 0.0
+    parallel: bool = True
     error: str | None = None
 
     @property
@@ -58,6 +67,22 @@ class PipelineResult:
         if self.analysis and self.analysis.answer:
             return self.analysis.answer
         return f"No answer produced ({self.error})." if self.error else "No answer produced."
+
+    @property
+    def status(self) -> str:
+        if self.error:
+            return "failed"
+        if any(not r.ok for r in self.data):
+            return "partial"
+        return "ok"
+
+    @property
+    def failures(self) -> list[dict]:
+        return [
+            {"series_id": r.series_id, "reason": r.failure_reason}
+            for r in self.data
+            if not r.ok
+        ]
 
     @property
     def cost(self) -> dict:
@@ -68,14 +93,21 @@ class PipelineResult:
     def total_estimated_usd(self) -> float:
         return self.run_cost.total_usd
 
+    def result_for(self, series_id: str) -> DataAgentResult | None:
+        return next((r for r in self.data if r.series_id == series_id), None)
+
     def to_dict(self) -> dict:
         return {
             "user_query": self.user_query,
+            "status": self.status,
             "answer": self.answer,
             "error": self.error,
+            "parallel": self.parallel,
+            "wall_seconds": round(self.wall_seconds, 4),
+            "failures": self.failures,
             "cost": self.cost,
             "plan": asdict(self.plan) if self.plan else None,
-            "data": asdict(self.data) if self.data else None,
+            "data": [asdict(r) for r in self.data],
             "analysis": asdict(self.analysis) if self.analysis else None,
             "trace": [asdict(t) for t in self.trace],
         }
@@ -83,6 +115,8 @@ class PipelineResult:
 
 def _serialize(obj) -> str:
     """What one agent hands the next, as a string, for token estimation."""
+    if isinstance(obj, list):
+        return json.dumps([asdict(o) for o in obj], default=str)
     return json.dumps(asdict(obj), default=str)
 
 
@@ -105,48 +139,92 @@ def _plan_summary(p: QueryPlan) -> str:
     )
 
 
-def _data_summary(d: DataAgentResult) -> str:
+def _data_summary(results: list[DataAgentResult]) -> str:
     return "; ".join(
-        f"{s.series_id}={s.observation_count}pts" + (f" err={s.error}" if s.error else "")
-        for s in d.series
-    ) or f"errors={d.errors}"
+        f"{r.series_id}="
+        + (f"{r.series.observation_count}pts" if r.ok else f"FAIL({r.failure_reason})")
+        for r in results
+    )
 
 
-def _record(result: PipelineResult, stage: str, sent: str, produced: str,
-            in_summary: str, out_summary: str) -> None:
-    cost = result.run_cost.add(stage, sent, produced)
-    trace = StageTrace(stage, in_summary, out_summary, cost.as_dict())
+def _record(
+    result: PipelineResult,
+    stage: str,
+    costs: list[cost_tracker.StageCost],
+    in_summary: str,
+    out_summary: str,
+    wall_seconds: float,
+) -> None:
+    """Record one pipeline stage: fold every StageCost into the run total
+    (one per parallel Data Agent), and emit a single aggregated trace entry."""
+    for c in costs:
+        result.run_cost.record(c)
+    agg = {
+        "stage": stage,
+        "calls": len(costs),
+        "input_tokens": sum(c.input_tokens for c in costs),
+        "output_tokens": sum(c.output_tokens for c in costs),
+        "estimated_usd": round(sum(c.usd for c in costs), 6),
+    }
+    trace = StageTrace(stage, in_summary, out_summary, agg, round(wall_seconds, 4), len(costs))
     result.trace.append(trace)
     _log(trace)
 
 
-def run_query(user_query: str) -> PipelineResult:
-    result = PipelineResult(user_query=user_query)
+def run_query(
+    user_query: str,
+    *,
+    plan: QueryPlan | None = None,
+    parallel: bool = True,
+) -> PipelineResult:
+    """Run the full pipeline. `plan` overrides the orchestrator (for replaying
+    or hand-crafting a plan); `parallel=False` runs the Data Agents one at a
+    time (same code path — used to benchmark the difference)."""
+    result = PipelineResult(user_query=user_query, parallel=parallel)
+    run_started = time.monotonic()
+    sc = cost_tracker.stage_cost
 
-    # 1. Orchestrator -------------------------------------------------
-    plan = orchestrator.plan_query(user_query)
+    # 1. Orchestrator ------------------------------------------------
+    if plan is None:
+        t0 = time.monotonic()
+        plan = orchestrator.plan_query(user_query)
+        wall, suffix = time.monotonic() - t0, ""
+    else:
+        wall, suffix = 0.0, " (supplied)"
     result.plan = plan
-    _record(result, "orchestrator", user_query, _serialize(plan),
-            user_query, _plan_summary(plan))
+    _record(result, "orchestrator", [sc("orchestrator", user_query, _serialize(plan))],
+            user_query, _plan_summary(plan) + suffix, wall)
     if not plan.ok:
         result.error = plan.error
+        result.wall_seconds = time.monotonic() - run_started
         return result
 
-    # 2. Data Agent (the only stage with tool access) ---------------
-    data = data_agent.fetch(plan)
-    result.data = data
-    _record(result, "data_agent", _serialize(plan), _serialize(data),
-            _plan_summary(plan), _data_summary(data))
-    if not data.ok:
-        result.error = "data_agent_failed"
+    # 2. Data Agents — one per series, concurrently -----------------
+    batch = data_agent.fetch_all(plan, parallel=parallel)
+    result.data = batch.results
+    plan_json = _serialize(plan)
+    produced = _serialize(batch.results)
+    # One StageCost per Data Agent instance → RunCost sums them, per_agent()
+    # shows the call count.
+    data_costs = [sc("data_agent", plan_json, _serialize(r)) for r in batch.results]
+    _record(result, "data_agent", data_costs,
+            _plan_summary(plan), _data_summary(batch.results), batch.wall_seconds)
+
+    if not batch.ok_results:
+        result.error = "all_data_agents_failed"
+        result.analysis = analysis_agent.analyze(batch.results)  # fills the failure note
+        result.wall_seconds = time.monotonic() - run_started
         return result
 
-    # 3. Analysis Agent (no tool access) --------------------------
-    analysis = analysis_agent.analyze(data)
+    # 3. Analysis Agent — no tool access --------------------------
+    t0 = time.monotonic()
+    analysis = analysis_agent.analyze(batch.results)
     result.analysis = analysis
-    _record(result, "analysis_agent", _serialize(data), _serialize(analysis),
-            _data_summary(data), analysis.answer)
+    _record(result, "analysis_agent", [sc("analysis_agent", produced, _serialize(analysis))],
+            _data_summary(batch.results), analysis.answer, time.monotonic() - t0)
+
     if not analysis.ok:
         result.error = analysis.error
 
+    result.wall_seconds = time.monotonic() - run_started
     return result

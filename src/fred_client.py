@@ -18,6 +18,7 @@ selection, orchestration, and cost accounting can be exercised end to end.
 import hashlib
 import math
 import os
+import time
 from datetime import date, timedelta
 
 import httpx
@@ -49,6 +50,19 @@ def _offline() -> bool:
     if v in {"0", "false", "no"}:
         return False
     return not os.environ.get("FRED_API_KEY")
+
+
+def _offline_latency() -> float:
+    """Optional simulated per-call latency for offline mode, in seconds.
+
+    Set FRED_OFFLINE_LATENCY_MS to make the synthetic fixture sleep like a real
+    network call would — used to demonstrate and benchmark the sequential vs.
+    parallel Data Agent difference without hitting the real API.
+    """
+    try:
+        return max(float(os.environ.get("FRED_OFFLINE_LATENCY_MS", "0")), 0.0) / 1000.0
+    except ValueError:
+        return 0.0
 
 
 def _api_key() -> str:
@@ -110,6 +124,7 @@ def search_series(search_text: str, limit: int = 5) -> list[dict]:
         return _cache[key]["results"]
 
     if _offline():
+        time.sleep(_offline_latency())
         results = [
             {
                 "series_id": s.id,
@@ -153,6 +168,7 @@ def get_observations(series_id: str, start: date, end: date, frequency: str) -> 
         return _cache[key]["observations"]
 
     if _offline():
+        time.sleep(_offline_latency())
         if series_id not in catalog.IDS:
             raise FredAPIError(f"No synthetic fixture for series '{series_id}' (offline mode).")
         observations = [
@@ -191,6 +207,7 @@ def get_series_metadata(series_id: str) -> dict:
         return _cache[key]["meta"]
 
     if _offline():
+        time.sleep(_offline_latency())
         if series_id not in catalog.IDS:
             raise FredAPIError(f"No synthetic fixture for series '{series_id}' (offline mode).")
         s = catalog.CATALOG[series_id]

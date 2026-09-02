@@ -1,13 +1,17 @@
 """
-Orchestrator — the planning stage of the minimal pipeline.
+Orchestrator — the planning stage of the pipeline.
 
-    Orchestrator → Data Agent → Analysis Agent   (sequential, phase 1)
+    Orchestrator → Data Agent(s) → Analysis Agent
 
-Its whole job is to turn a natural-language query into a **structured plan**
-telling the Data Agent exactly which FRED series to fetch and over what
-window. It never touches a FRED tool itself — series resolution is done
-against the local catalog (`catalog.resolve` / `catalog.search`), which is
-project knowledge, not a network call.
+Its whole job is to turn a natural-language query into a **structured plan**:
+which FRED series to fetch, over what window, and whether the query is a
+single-series lookup or a multi-series comparison. It never touches a FRED
+tool itself — series resolution is done against the local catalog
+(`catalog.resolve` / `catalog.search`), which is project knowledge, not a
+network call.
+
+The plan carries a *list* of `FetchRequest`s; the orchestration layer runs
+one Data Agent per request (concurrently for multi-series queries).
 
 Errors are returned on the dataclass (`QueryPlan.error`), never raised — same
 pattern as `fred_client` / `security` at the tool boundary.
@@ -21,8 +25,8 @@ from datetime import date
 
 import catalog
 
-# How many series one query is allowed to pull in phase 1 — mirrors the
-# compare_series cap so a plan can't fan out unboundedly.
+# How many series one query is allowed to pull — mirrors the compare_series
+# cap so a plan can't fan out unboundedly.
 MAX_SERIES = 4
 
 _YEAR_RE = re.compile(r"\b(?:19|20)\d{2}\b")
@@ -118,6 +122,27 @@ def plan_query(user_query: str, today: date | None = None) -> QueryPlan:
         )
 
     start, end, freq = _parse_window(user_query, today)
+    return _build_plan(user_query, series, start, end, freq)
+
+
+def plan_for_series(
+    user_query: str,
+    series_ids: list[str],
+    *,
+    today: date | None = None,
+) -> QueryPlan:
+    """Build a plan for an explicit list of series IDs (window still parsed
+    from the query). For callers that already know which series they want —
+    and for exercising the partial-failure path with a deliberately bad ID."""
+    if not series_ids:
+        return QueryPlan(user_query, error="no_series_identified", detail="No series given.")
+    start, end, freq = _parse_window(user_query, today)
+    return _build_plan(user_query, list(series_ids)[:MAX_SERIES], start, end, freq)
+
+
+def _build_plan(
+    user_query: str, series: list[str], start: str, end: str, freq: str
+) -> QueryPlan:
     fetches = tuple(
         FetchRequest(series_id=sid, start_date=start, end_date=end, frequency=freq)
         for sid in series
@@ -127,7 +152,7 @@ def plan_query(user_query: str, today: date | None = None) -> QueryPlan:
     rationale = (
         f"{kind} {len(series)} series ({', '.join(series)}); "
         f"window {start}..{end} at frequency '{freq}'. "
-        f"Data Agent to fetch observations + metadata for each."
+        f"One Data Agent per series to fetch observations + metadata."
     )
     return QueryPlan(
         user_query=user_query, fetches=fetches, rationale=rationale, comparison=comparison
