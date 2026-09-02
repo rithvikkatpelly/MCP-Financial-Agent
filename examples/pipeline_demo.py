@@ -26,14 +26,25 @@ def main() -> None:
     query = sys.argv[1] if len(sys.argv) > 1 else DEFAULT_Q
     result = run_query(query)
 
-    print(f"Query: {query}\n")
+    print(f"Query: {query}")
+    if result.plan:
+        print(f"Plan:  {result.plan.mode} — {result.plan.rationale}\n")
+
     for stage in result.trace:
         c = stage.cost
         print(f"[{stage.stage}]")
         print(f"  in : {stage.input_summary}")
         print(f"  out: {stage.output_summary}")
         print(f"  cost: ~{c['input_tokens']}+{c['output_tokens']} tok  ~${c['estimated_usd']:.6f}")
-    print(f"\ntotal estimated: ~${result.total_estimated_usd:.6f}")
+
+    cost = result.cost
+    print("\nper-agent cost:")
+    for row in cost["per_agent"]:
+        print(f"  {row['stage']:<15} {row['calls']}x  "
+              f"~{row['input_tokens']}+{row['output_tokens']} tok  ~${row['estimated_usd']:.6f}")
+    t = cost["total"]
+    print(f"  {'RUN TOTAL':<15}     ~{t['input_tokens']}+{t['output_tokens']} tok  "
+          f"~${t['estimated_usd']:.6f}")
 
     if result.error:
         print(f"\nerror: {result.error}")

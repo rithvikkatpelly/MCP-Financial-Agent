@@ -46,12 +46,19 @@ class QueryPlan:
     user_query: str
     fetches: tuple[FetchRequest, ...] = ()
     rationale: str = ""
+    comparison: bool = False  # multi-series comparison vs. single-series lookup
     error: str | None = None
     detail: str = ""
 
     @property
     def ok(self) -> bool:
         return self.error is None and bool(self.fetches)
+
+    @property
+    def mode(self) -> str:
+        if self.error is not None:
+            return "error"
+        return "comparison" if self.comparison else "single_series"
 
     @property
     def tool_call_count(self) -> int:
@@ -115,9 +122,13 @@ def plan_query(user_query: str, today: date | None = None) -> QueryPlan:
         FetchRequest(series_id=sid, start_date=start, end_date=end, frequency=freq)
         for sid in series
     )
+    comparison = len(fetches) > 1
+    kind = "comparison across" if comparison else "single-series lookup of"
     rationale = (
-        f"Matched {len(series)} series ({', '.join(series)}); "
+        f"{kind} {len(series)} series ({', '.join(series)}); "
         f"window {start}..{end} at frequency '{freq}'. "
         f"Data Agent to fetch observations + metadata for each."
     )
-    return QueryPlan(user_query=user_query, fetches=fetches, rationale=rationale)
+    return QueryPlan(
+        user_query=user_query, fetches=fetches, rationale=rationale, comparison=comparison
+    )

@@ -52,9 +52,28 @@ def test_data_agent_output_matches_schema(cpi_run):
     assert isinstance(cpi.metadata, dict)
     assert isinstance(cpi.observations, list)
 
-    # the result carries a per-stage cost estimate
-    assert data.cost["stage"] == "data_agent"
-    assert data.cost["estimated_usd"] >= 0.0
+
+def test_plan_records_single_vs_comparison_mode(cpi_run):
+    assert cpi_run.plan.mode == "single_series"
+    assert cpi_run.plan.comparison is False
+    multi = run_query("Compare CPI and unemployment over the last 5 years")
+    assert multi.plan.mode == "comparison"
+    assert multi.plan.comparison is True
+
+
+def test_cost_is_tracked_per_agent_and_totaled(cpi_run):
+    cost = cpi_run.cost
+    stages = [row["stage"] for row in cost["per_agent"]]
+    assert stages == ["orchestrator", "data_agent", "analysis_agent"]
+
+    # running total equals the sum of the per-agent rows
+    summed = round(sum(row["estimated_usd"] for row in cost["per_agent"]), 6)
+    assert cost["total"]["estimated_usd"] == summed
+    assert cpi_run.total_estimated_usd == cost["total"]["estimated_usd"]
+    assert cost["total"]["input_tokens"] > 0 and cost["total"]["output_tokens"] > 0
+
+    # each stage trace carries its own cost too
+    assert [t.cost["stage"] for t in cpi_run.trace] == stages
 
 
 def test_pipeline_result_is_fully_serializable(cpi_run):

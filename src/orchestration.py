@@ -2,15 +2,16 @@
 The phase-1 pipeline, wired end to end.
 
     run_query(user_query)
-        → orchestrator.plan_query   (NL query      → QueryPlan)
-        → data_agent.fetch          (QueryPlan     → DataAgentResult)
+        → orchestrator.plan_query   (NL query        → QueryPlan)
+        → data_agent.fetch          (QueryPlan       → DataAgentResult)
         → analysis_agent.analyze    (DataAgentResult → AnalysisResult)
         → PipelineResult
 
 Sequential, no parallelism. Every hand-off passes a typed dataclass — never
-raw strings or conversation history. Each stage's input, output, and
-estimated cost are captured on `PipelineResult.trace` and appended to
-`agent_trace.log` (git-ignored) so a run can be inspected afterward.
+raw strings or conversation history. For each stage the orchestration layer
+records the input, the output, and an estimated cost into a single
+`cost_tracker.RunCost` for the whole run; the per-stage trace is also
+appended to `agent_trace.log` (git-ignored) for inspection afterward.
 """
 
 from __future__ import annotations
@@ -39,7 +40,7 @@ class StageTrace:
     stage: str
     input_summary: str
     output_summary: str
-    cost: dict
+    cost: dict  # this stage's StageCost.as_dict()
 
 
 @dataclass
@@ -49,6 +50,7 @@ class PipelineResult:
     data: DataAgentResult | None = None
     analysis: AnalysisResult | None = None
     trace: list[StageTrace] = field(default_factory=list)
+    run_cost: cost_tracker.RunCost = field(default_factory=cost_tracker.RunCost)
     error: str | None = None
 
     @property
@@ -58,20 +60,30 @@ class PipelineResult:
         return f"No answer produced ({self.error})." if self.error else "No answer produced."
 
     @property
+    def cost(self) -> dict:
+        """Per-agent breakdown + the running total for the whole run."""
+        return self.run_cost.as_dict()
+
+    @property
     def total_estimated_usd(self) -> float:
-        return round(sum(t.cost.get("estimated_usd", 0.0) for t in self.trace), 6)
+        return self.run_cost.total_usd
 
     def to_dict(self) -> dict:
         return {
             "user_query": self.user_query,
             "answer": self.answer,
             "error": self.error,
-            "total_estimated_usd": self.total_estimated_usd,
+            "cost": self.cost,
             "plan": asdict(self.plan) if self.plan else None,
             "data": asdict(self.data) if self.data else None,
             "analysis": asdict(self.analysis) if self.analysis else None,
             "trace": [asdict(t) for t in self.trace],
         }
+
+
+def _serialize(obj) -> str:
+    """What one agent hands the next, as a string, for token estimation."""
+    return json.dumps(asdict(obj), default=str)
 
 
 def _log(stage: StageTrace) -> None:
@@ -88,7 +100,7 @@ def _log(stage: StageTrace) -> None:
 def _plan_summary(p: QueryPlan) -> str:
     if not p.ok:
         return f"error={p.error}"
-    return ", ".join(
+    return f"[{p.mode}] " + ", ".join(
         f"{f.series_id}[{f.start_date}..{f.end_date}/{f.frequency}]" for f in p.fetches
     )
 
@@ -100,41 +112,40 @@ def _data_summary(d: DataAgentResult) -> str:
     ) or f"errors={d.errors}"
 
 
+def _record(result: PipelineResult, stage: str, sent: str, produced: str,
+            in_summary: str, out_summary: str) -> None:
+    cost = result.run_cost.add(stage, sent, produced)
+    trace = StageTrace(stage, in_summary, out_summary, cost.as_dict())
+    result.trace.append(trace)
+    _log(trace)
+
+
 def run_query(user_query: str) -> PipelineResult:
     result = PipelineResult(user_query=user_query)
 
-    # 1. Orchestrator ---------------------------------------------------
+    # 1. Orchestrator -------------------------------------------------
     plan = orchestrator.plan_query(user_query)
     result.plan = plan
-    plan_cost = cost_tracker.stage_cost(
-        "orchestrator", user_query, json.dumps(_plan_summary(plan))
-    ).as_dict()
-    st = StageTrace("orchestrator", user_query, _plan_summary(plan), plan_cost)
-    result.trace.append(st)
-    _log(st)
-
+    _record(result, "orchestrator", user_query, _serialize(plan),
+            user_query, _plan_summary(plan))
     if not plan.ok:
         result.error = plan.error
         return result
 
-    # 2. Data Agent ---------------------------------------------------
+    # 2. Data Agent (the only stage with tool access) ---------------
     data = data_agent.fetch(plan)
     result.data = data
-    st = StageTrace("data_agent", _plan_summary(plan), _data_summary(data), data.cost)
-    result.trace.append(st)
-    _log(st)
-
+    _record(result, "data_agent", _serialize(plan), _serialize(data),
+            _plan_summary(plan), _data_summary(data))
     if not data.ok:
         result.error = "data_agent_failed"
         return result
 
-    # 3. Analysis Agent -------------------------------------------------
+    # 3. Analysis Agent (no tool access) --------------------------
     analysis = analysis_agent.analyze(data)
     result.analysis = analysis
-    st = StageTrace("analysis_agent", _data_summary(data), analysis.answer, analysis.cost)
-    result.trace.append(st)
-    _log(st)
-
+    _record(result, "analysis_agent", _serialize(data), _serialize(analysis),
+            _data_summary(data), analysis.answer)
     if not analysis.ok:
         result.error = analysis.error
 

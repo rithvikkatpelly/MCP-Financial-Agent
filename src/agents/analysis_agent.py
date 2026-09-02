@@ -17,7 +17,6 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from datetime import date
 
-import cost_tracker
 from agents.data_agent import DataAgentResult, SeriesData
 
 
@@ -42,7 +41,6 @@ class AnalysisResult:
     answer: str = ""
     per_series: list[SeriesAnalysis] = field(default_factory=list)
     error: str | None = None
-    cost: dict = field(default_factory=dict)
 
     @property
     def ok(self) -> bool:
@@ -120,11 +118,10 @@ def _analyze_series(s: SeriesData) -> SeriesAnalysis:
 
 
 def analyze(data: DataAgentResult) -> AnalysisResult:
+    """Descriptive stats over each series. No tool access; cost is accounted
+    for by the orchestration layer."""
     if not data.series:
-        return AnalysisResult(
-            error=data.errors[0] if data.errors else "no_data",
-            cost=cost_tracker.stage_cost("analysis_agent", "{}", "{}").as_dict(),
-        )
+        return AnalysisResult(error=data.errors[0] if data.errors else "no_data")
 
     per_series = [_analyze_series(s) for s in data.series]
     usable = [a for a in per_series if a.error is None]
@@ -138,16 +135,4 @@ def analyze(data: DataAgentResult) -> AnalysisResult:
         answer = " ".join(a.summary for a in usable)
         error = None
 
-    result = AnalysisResult(answer=answer, per_series=per_series, error=error)
-    result.cost = cost_tracker.stage_cost(
-        "analysis_agent",
-        _input_repr(data),
-        answer + " ".join(a.summary for a in per_series),
-    ).as_dict()
-    return result
-
-
-def _input_repr(data: DataAgentResult) -> str:
-    return "".join(
-        f"{s.series_id}:{s.observation_count}pts " for s in data.series
-    )
+    return AnalysisResult(answer=answer, per_series=per_series, error=error)

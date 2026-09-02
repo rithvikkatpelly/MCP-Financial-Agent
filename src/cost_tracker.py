@@ -137,3 +137,61 @@ def stage_cost(stage: str, sent: str, produced: str) -> StageCost:
     """Estimate the token cost of one agent turn from what it was sent and
     what it produced (both already serialized to strings)."""
     return StageCost(stage, estimate_tokens(sent), estimate_tokens(produced))
+
+
+@dataclass
+class RunCost:
+    """Per-run cost accumulator for the multi-agent pipeline.
+
+    `orchestration.run_query()` creates one of these per run and records every
+    agent hand-off into it. `per_agent()` is the per-agent breakdown; `total_*`
+    is the running total for the whole run. In phase 2 the parallel Data Agent
+    calls all record into this same instance, so the total stays correct.
+    """
+
+    stages: list[StageCost] = field(default_factory=list)
+
+    def record(self, cost: StageCost) -> StageCost:
+        self.stages.append(cost)
+        return cost
+
+    def add(self, stage: str, sent: str, produced: str) -> StageCost:
+        return self.record(stage_cost(stage, sent, produced))
+
+    @property
+    def total_input_tokens(self) -> int:
+        return sum(s.input_tokens for s in self.stages)
+
+    @property
+    def total_output_tokens(self) -> int:
+        return sum(s.output_tokens for s in self.stages)
+
+    @property
+    def total_usd(self) -> float:
+        return round(sum(s.usd for s in self.stages), 6)
+
+    def per_agent(self) -> list[dict]:
+        """One row per agent name, collapsing repeated calls (phase 2's
+        parallel Data Agents) while keeping a call count."""
+        rows: dict[str, dict] = {}
+        for s in self.stages:
+            row = rows.setdefault(
+                s.stage,
+                {"stage": s.stage, "calls": 0, "input_tokens": 0,
+                 "output_tokens": 0, "estimated_usd": 0.0},
+            )
+            row["calls"] += 1
+            row["input_tokens"] += s.input_tokens
+            row["output_tokens"] += s.output_tokens
+            row["estimated_usd"] = round(row["estimated_usd"] + s.usd, 6)
+        return list(rows.values())
+
+    def as_dict(self) -> dict:
+        return {
+            "per_agent": self.per_agent(),
+            "total": {
+                "input_tokens": self.total_input_tokens,
+                "output_tokens": self.total_output_tokens,
+                "estimated_usd": self.total_usd,
+            },
+        }

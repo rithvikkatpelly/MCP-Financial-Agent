@@ -17,10 +17,8 @@ never raised.
 
 from __future__ import annotations
 
-import json
 from dataclasses import dataclass, field
 
-import cost_tracker
 import security
 import tools
 from agents.orchestrator import FetchRequest, QueryPlan
@@ -50,7 +48,6 @@ class DataAgentResult:
     plan: QueryPlan
     series: list[SeriesData] = field(default_factory=list)
     errors: list[str] = field(default_factory=list)
-    cost: dict = field(default_factory=dict)
 
     @property
     def ok(self) -> bool:
@@ -113,14 +110,10 @@ def _fetch_one(req: FetchRequest) -> SeriesData:
 
 
 def fetch(plan: QueryPlan) -> DataAgentResult:
+    """Run every FetchRequest in the plan (sequentially in phase 1). Cost is
+    accounted for by the orchestration layer, not here."""
     if not plan.ok:
-        return DataAgentResult(
-            plan=plan,
-            errors=[plan.error or "invalid_plan"],
-            cost=cost_tracker.stage_cost(
-                "data_agent", json.dumps(plan.user_query), "[]"
-            ).as_dict(),
-        )
+        return DataAgentResult(plan=plan, errors=[plan.error or "invalid_plan"])
 
     series: list[SeriesData] = []
     errors: list[str] = []
@@ -130,19 +123,4 @@ def fetch(plan: QueryPlan) -> DataAgentResult:
         if sd.error:
             errors.append(f"{sd.series_id}: {sd.error}")
 
-    result = DataAgentResult(plan=plan, series=series, errors=errors)
-    result.cost = cost_tracker.stage_cost(
-        "data_agent",
-        json.dumps([vars(f) for f in plan.fetches]),
-        json.dumps([_series_summary(s) for s in series], default=str),
-    ).as_dict()
-    return result
-
-
-def _series_summary(s: SeriesData) -> dict:
-    return {
-        "series_id": s.series_id,
-        "n": s.observation_count,
-        "range": [s.start_date, s.end_date],
-        "error": s.error,
-    }
+    return DataAgentResult(plan=plan, series=series, errors=errors)
