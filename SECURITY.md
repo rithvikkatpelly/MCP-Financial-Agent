@@ -13,6 +13,7 @@ and where it is tested.
 | Secret protection (key from env only; redaction before logging/error text) | ✅ | [`security.redact_secrets`](src/security.py), [`src/audit_log.py`](src/audit_log.py) | [`tests/test_audit_log.py`](tests/test_audit_log.py) `test_secret_is_redacted` |
 | Tool authorization / least privilege (only the Economic Data Agent holds data tools; Risk/Report agents hold none) | ✅ | [`src/agents/specialists.py`](src/agents/specialists.py) | `tests/test_agents.py` |
 | Untrusted-data handling (FRED notes wrapped at every surface: MCP + agents) | ✅ | [`src/tools.py`](src/tools.py) `get_series_metadata` | `test_security.py` |
+| Untrusted-data handling, second source (news headline title + snippet wrapped; only a fixed topic vocabulary — never headline text — reaches the analysis output) | ✅ | [`src/agents/news_agent.py`](src/agents/news_agent.py), [`src/agents/analysis_agent.py`](src/agents/analysis_agent.py) `_extract_themes` | [`tests/test_news_injection.py`](tests/test_news_injection.py) — 5/5 passing |
 | Output validation (final report may only cite series that were actually fetched) | ✅ | [`evals/metrics.py`](evals/metrics.py) `groundedness` | [`tests/test_evals.py`](tests/test_evals.py) |
 | Rate limiting (token bucket at the MCP boundary) | ✅ | [`src/rate_limit.py`](src/rate_limit.py) | [`tests/test_rate_limit.py`](tests/test_rate_limit.py) |
 | Audit logging (append-only JSONL of every tool call, rejection, and rate-limit hit) | ✅ | [`src/audit_log.py`](src/audit_log.py) | `tests/test_audit_log.py` |
@@ -29,6 +30,15 @@ instructions…"* reaches the model as a quoted string. The evaluation harness
 carries a deliberately poisoned synthetic series (`INJTEST`) and the
 `injection-probe-notes` case asserts the payload never reaches the final
 report.
+
+**News headlines needed a stronger defense than FRED metadata, not just the
+same one.** FRED's `notes` field is boilerplate the Analysis Agent never
+reads. News headlines are the *point* — the Analysis Agent has to reason
+about what they say, so "never touch the wrapped text" doesn't work. Instead,
+`_extract_themes` matches a small fixed vocabulary of legitimate news topics
+against the untrusted text and only ever emits the vocabulary word it
+matched — the untrusted string itself has no path into `AnalysisResult.answer`
+regardless of what it contains. See README §5 "Cross-source security".
 
 **Rate limiting is at the boundary only.** The in-process orchestrator is
 trusted code with its own iteration cap; the token bucket guards the one place

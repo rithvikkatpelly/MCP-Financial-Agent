@@ -38,8 +38,9 @@ def _path() -> Path:
 
 
 def _secrets() -> list[str]:
-    key = os.environ.get("FRED_API_KEY")
-    return [key] if key else []
+    return [
+        v for v in (os.environ.get("FRED_API_KEY"), os.environ.get("NEWS_API_KEY")) if v
+    ]
 
 
 def _redact(value: Any) -> Any:

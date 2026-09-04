@@ -85,3 +85,30 @@ through the supervisor and grades each run on tool selection, series
 grounding, argument validity, orchestration, groundedness, and injection
 resistance. `python -m evals` writes [`evals/REPORT.md`](../evals/REPORT.md)
 and exits non-zero on any regression, so CI fails loudly.
+
+> **Note:** the two sections above describe the original supervisor +
+> 4-specialist pipeline. A second, newer pipeline
+> (`orchestrator.py` → `data_agent.py`/`news_agent.py` → `analysis_agent.py`,
+> wired by `src/orchestration.py`) was built alongside it in later phases —
+> see [`README.md`](../README.md) §§1–6 and the note below. The two aren't
+> yet reconciled into one diagram; that's tracked in
+> [`ROADMAP.md`](../ROADMAP.md).
+
+## Phase 4: a second, heterogeneous source
+
+`orchestrator.plan_query` now routes to Data Agent(s), a News Agent, or both,
+explicit on the plan (`needs_data` / `needs_news`) — never inferred
+downstream. When both are needed, `orchestration.run_query` builds a
+`DataAgent` per series and one `NewsAgent`, then runs **all of them under one
+`asyncio.gather`** so the FRED fetches and the news search genuinely overlap
+in time rather than running data-then-news.
+
+Everything about `search_news` deliberately mirrors the FRED tools —
+[`news_client.py`](../src/news_client.py) mirrors `fred_client.py`
+field-for-field, the tool follows the same validate → fetch → wrap →
+structured-error shape in `tools.py`, and `cost_tracker.RunCost` needed zero
+changes to add a `news_agent` cost row. The one thing that didn't generalize
+for free: proving two *different* agent classes ran concurrently needed a
+shared interval-overlap check, factored out into
+[`agents/timing.py`](../src/agents/timing.py) rather than duplicated between
+`DataFetchBatch.overlapped` and the orchestration layer's combined check.

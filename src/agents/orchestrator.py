@@ -1,17 +1,26 @@
 """
 Orchestrator — the planning stage of the pipeline.
 
-    Orchestrator → Data Agent(s) → Analysis Agent
+    Orchestrator → Data Agent(s) / News Agent → Analysis Agent
 
 Its whole job is to turn a natural-language query into a **structured plan**:
-which FRED series to fetch, over what window, single-series vs. comparison,
-and — when it can't do that cleanly — a structured refusal or a clarification
-request instead of a guess. It never touches a FRED tool itself; series
-resolution is done against the local catalog (`catalog.resolve` /
-`catalog.score_query`), which is project knowledge, not a network call.
+which FRED series to fetch (if any), whether to search news (if any), over
+what window, single-series vs. comparison, and — when it can't do that
+cleanly — a structured refusal or a clarification request instead of a guess.
+It never touches a tool itself; series resolution is against the local
+catalog (`catalog.resolve` / `catalog.score_query`), and the news decision is
+a keyword check — both project knowledge, not network calls.
+
+Source routing is **explicit on the plan**, not inferred downstream:
+`needs_data` and `needs_news` (bools) say which agents to invoke, and
+`sources` is the derived list of both.
+
+  "How has CPI changed over the last 5 years?"   -> needs_data only
+  "What's driving recent inflation news?"        -> needs_data AND needs_news
+  "What are the top headlines about the Fed?"    -> needs_news only
 
 The plan carries a *list* of `FetchRequest`s; the orchestration layer runs one
-Data Agent per request (concurrently for multi-series queries).
+Data Agent per request and, when needed, one News Agent, concurrently.
 
 This orchestrator is **deterministic** — regex + dictionary lookups, no LLM,
 so it has no instruction-following surface. An embedded "ignore previous
@@ -39,6 +48,14 @@ _YEAR_RE = re.compile(r"\b(?:19|20)\d{2}\b")
 _LAST_N_RE = re.compile(r"(?:last|past|previous)\s+(\d{1,2})\s+years?", re.IGNORECASE)
 _VAGUE_RECENT_RE = re.compile(
     r"\b(now|today|current|currently|latest|recent|recently|lately|nowadays|these days)\b",
+    re.IGNORECASE,
+)
+# Presence of any of these is what makes a query a *news* query. Deliberately
+# narrow — a false positive here just means an extra (cheap, harmless) News
+# Agent call; a false negative means a news query gets treated as data-only,
+# which the "what's driving recent inflation news" example is written to catch.
+_NEWS_HINTS_RE = re.compile(
+    r"\b(news|headline|headlines|article|articles|reporting|reports|coverage)\b",
     re.IGNORECASE,
 )
 
@@ -76,19 +93,38 @@ class QueryPlan:
     error: str | None = None           # None | empty_query | cannot_fulfill
                                        # | needs_clarification
     detail: str = ""
+    # --- source routing: explicit on the plan, not inferred downstream ---
+    needs_data: bool = False
+    needs_news: bool = False
+    news_query: str = ""
+    news_start_date: str = ""
+    news_end_date: str = ""
 
     @property
     def ok(self) -> bool:
-        return self.error is None and bool(self.fetches)
+        if self.error is not None:
+            return False
+        data_ok = (not self.needs_data) or bool(self.fetches)
+        news_ok = (not self.needs_news) or bool(self.news_query)
+        return (self.needs_data or self.needs_news) and data_ok and news_ok
 
     @property
     def status(self) -> str:
         return self.error or "ok"
 
     @property
+    def sources(self) -> tuple[str, ...]:
+        wanted = (("data", self.needs_data), ("news", self.needs_news))
+        return tuple(s for s, want in wanted if want)
+
+    @property
     def mode(self) -> str:
         if self.error is not None:
             return "error"
+        if self.needs_news and not self.needs_data:
+            return "news_only"
+        if self.needs_news and self.needs_data:
+            return "data_and_news"
         return "comparison" if self.comparison else "single_series"
 
     @property
@@ -102,7 +138,8 @@ class QueryPlan:
 
     @property
     def tool_call_count(self) -> int:
-        return sum(f.fetch_observations + f.fetch_metadata for f in self.fetches)
+        n = sum(f.fetch_observations + f.fetch_metadata for f in self.fetches)
+        return n + (1 if self.needs_news else 0)
 
 
 # --- date window ------------------------------------------------------
@@ -157,26 +194,62 @@ def _parse_window(query: str, today: date | None = None) -> tuple[str, str, str,
 # --- planning ---------------------------------------------------------
 
 
+def _needs_clarification_for_too_many_series(user_query: str, exact: list[str]) -> QueryPlan:
+    return QueryPlan(
+        user_query,
+        error="needs_clarification",
+        requested_series=len(exact),
+        clarification=(
+            f"You named {len(exact)} series ({', '.join(exact)}). I can "
+            f"compare at most {MAX_SERIES} at once — which {MAX_SERIES}?"
+        ),
+        detail=f"{len(exact)} series requested; the compare limit is {MAX_SERIES}.",
+    )
+
+
 def plan_query(user_query: str, today: date | None = None) -> QueryPlan:
     if not user_query or not user_query.strip():
         return QueryPlan(user_query, error="empty_query", detail="No query provided.")
 
     q = user_query.strip()
     start, end, freq, assumptions = _parse_window(q, today)
-
     exact = catalog.resolve(q)
+
+    # --- news queries: decide data+news vs. news-only -------------------
+    # A *precise* catalog hit (not the loose score_query fallback) is the
+    # signal for "this news query also wants numbers" — see the module
+    # docstring's three examples.
+    if _NEWS_HINTS_RE.search(q):
+        if exact and len(exact) > MAX_SERIES:
+            return _needs_clarification_for_too_many_series(user_query, exact)
+
+        needs_data = bool(exact)
+        fetches = tuple(
+            FetchRequest(series_id=sid, start_date=start, end_date=end, frequency=freq)
+            for sid in exact
+        )
+        comparison = len(fetches) > 1
+        data_note = f", plus Data Agent for {', '.join(exact)}" if needs_data else ""
+        rationale = f"News Agent for {q!r}{data_note}. Window {start}..{end}."
+        return QueryPlan(
+            user_query=user_query,
+            fetches=fetches,
+            rationale=rationale,
+            comparison=comparison,
+            resolution="exact" if needs_data else "none",
+            assumptions=assumptions,
+            requested_series=len(exact),
+            needs_data=needs_data,
+            needs_news=True,
+            news_query=q,
+            news_start_date=start,
+            news_end_date=end,
+        )
+
+    # --- pure data queries (unchanged from phases 1-3) -------------------
     if exact:
         if len(exact) > MAX_SERIES:
-            return QueryPlan(
-                user_query,
-                error="needs_clarification",
-                requested_series=len(exact),
-                clarification=(
-                    f"You named {len(exact)} series ({', '.join(exact)}). I can "
-                    f"compare at most {MAX_SERIES} at once — which {MAX_SERIES}?"
-                ),
-                detail=f"{len(exact)} series requested; the compare limit is {MAX_SERIES}.",
-            )
+            return _needs_clarification_for_too_many_series(user_query, exact)
         return _build_plan(
             user_query, exact, start, end, freq,
             resolution="exact", assumptions=assumptions, requested_series=len(exact),
@@ -187,7 +260,8 @@ def plan_query(user_query: str, today: date | None = None) -> QueryPlan:
         return QueryPlan(
             user_query,
             error="cannot_fulfill",
-            detail="This doesn't map to any economic series I can fetch from FRED.",
+            detail="This doesn't map to any economic series I can fetch from FRED, "
+                   "and doesn't look like a news query either.",
         )
 
     # In scope, but not a precise series name → route through search_series.
@@ -202,6 +276,7 @@ def plan_query(user_query: str, today: date | None = None) -> QueryPlan:
         resolution="search",
         assumptions=assumptions,
         requested_series=1,
+        needs_data=True,
         rationale=(
             f"'{q}' is not a precise series name; closest catalog match is {best}. "
             f"Data Agent to confirm via search_series before fetching. "
@@ -265,4 +340,5 @@ def _build_plan(
         resolution=resolution,
         assumptions=assumptions,
         requested_series=requested_series,
+        needs_data=True,
     )

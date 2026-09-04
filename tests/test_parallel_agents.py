@@ -86,7 +86,7 @@ def test_one_bad_series_id_does_not_crash_the_run():
 def test_all_series_failing_is_a_clean_failure_not_a_crash():
     plan = plan_for_series("compare nonsense", ["NOPE1", "NOPE2"])
     run = run_query(plan.user_query, plan=plan)
-    assert run.error == "all_data_agents_failed"
+    assert run.error == "all_sources_failed"  # generalized in phase 4 for data+news
     assert run.status == "failed"
     assert run.analysis is not None  # failure note still produced
 

@@ -30,6 +30,12 @@ reads as a development story rather than one drop.
 - [x] **Orchestrator routing eval** — 18 structural cases (single/comparison/
       cap/ambiguous/out-of-scope/injection/vague-date), 15 passing + 3 tracked
       `xfail` gaps
+- [x] **Second data source (news) + cross-source reasoning** — `news_client.py`
+      mirrors `fred_client.py`; a News Agent runs concurrently with the Data
+      Agent(s) under one `asyncio.gather`; the Analysis Agent separates
+      "Data:" (numeric, FRED) from "Headlines suggest:" (hedged, unverified).
+      Stress-tested the injection defense against a source built for
+      adversarial text — 5/5 passing (`tests/test_news_injection.py`)
 
 ### Next
 
@@ -37,11 +43,11 @@ reads as a development story rather than one drop.
       "route via search_series" routing decision, don't just record it)
 - [ ] Search-backed catalog so series outside the fixed 7 are reachable
 - [ ] Relative-event and compound date parsing in the orchestrator
+- [ ] Reconcile the two agent pipelines (supervisor+specialists vs.
+      orchestrator/data+news/analysis) into one diagram and one eval harness
 - [ ] Swap the dict cache for SQLite + TTL
 - [ ] Expand the supervisor eval dataset toward 50 cases; add adversarial queries
 - [ ] Live-backend eval run in CI (gated, on a schedule, with a spend cap)
-- [ ] A second untrusted-content source (news headlines) to stress the
-      injection defense with real-world text
 - [ ] Streaming the supervisor's progress (per-delegation events)
 - [ ] Deploy the MCP server over HTTP with per-session rate-limit keys
 - [ ] Observability: structured spans per agent, exported to a trace viewer

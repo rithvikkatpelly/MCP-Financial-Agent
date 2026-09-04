@@ -24,6 +24,7 @@ from dataclasses import dataclass, field
 
 import security
 import tools
+from agents import timing
 from agents.orchestrator import FetchRequest, QueryPlan
 
 _WRAPPED_KEYS = {"untrusted_source", "untrusted_source_text", "note"}
@@ -85,12 +86,7 @@ class DataFetchBatch:
     def overlapped(self) -> bool:
         """True if any two agents' execution windows overlapped in time — i.e.
         they really did run concurrently, not one after another."""
-        windows = sorted(
-            (a.started_at, a.finished_at)
-            for a in self.agents
-            if a.started_at is not None and a.finished_at is not None
-        )
-        return any(windows[i][1] > windows[i + 1][0] for i in range(len(windows) - 1))
+        return timing.overlapped(self.agents)
 
     @property
     def ok_results(self) -> list[DataAgentResult]:
@@ -191,13 +187,23 @@ async def _gather(agents: list[DataAgent], *, parallel: bool) -> list[DataAgentR
     return [await a.run() for a in agents]
 
 
+def build_agents(plan: QueryPlan) -> list[DataAgent]:
+    """One `DataAgent` per FetchRequest in the plan. Exposed so the
+    orchestration layer can compose these with a `NewsAgent` under one shared
+    `asyncio.gather` when a query needs both sources concurrently — `fetch_all`
+    below is the data-only convenience wrapper for standalone use."""
+    return [DataAgent(req) for req in plan.fetches]
+
+
 def fetch_all(plan: QueryPlan, *, parallel: bool = True) -> DataFetchBatch:
     """Run one Data Agent per FetchRequest and collect the results in request
     order. `parallel=True` runs them concurrently; `parallel=False` is the same
     code path, one at a time (used to benchmark the difference).
 
     A single-series plan is just a batch of length 1 — identical behaviour to
-    the sequential phase-1 pipeline.
+    the sequential phase-1 pipeline. Data-only: when a plan also needs news,
+    the orchestration layer uses `build_agents` directly instead so both
+    sources share one `asyncio.gather`.
     """
     if not plan.ok:
         bad = FetchRequest(series_id="", start_date="", end_date="")
@@ -208,7 +214,7 @@ def fetch_all(plan: QueryPlan, *, parallel: bool = True) -> DataFetchBatch:
             parallel=parallel,
         )
 
-    agents = [DataAgent(req) for req in plan.fetches]
+    agents = build_agents(plan)
     started = time.monotonic()
     results = asyncio.run(_gather(agents, parallel=parallel))
     wall = time.monotonic() - started

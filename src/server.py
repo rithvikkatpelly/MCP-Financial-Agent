@@ -1,10 +1,10 @@
 """
 Econ Data MCP Server
 
-Exposes economic time series data from FRED as four narrow tools plus one
-resource. The tool logic lives in `tools.py` so the MCP surface here and the
-multi-agent orchestrator in `agents/` share one implementation. See README.md
-for the design rationale.
+Exposes economic time series data from FRED (four tools) and news headlines
+from NewsAPI.org (one tool) plus one resource. The tool logic lives in
+`tools.py` so the MCP surface here and the multi-agent orchestrator in
+`agents/` share one implementation. See README.md for the design rationale.
 
 Run directly (stdio transport, for use with Claude Desktop):
     python src/server.py
@@ -104,6 +104,26 @@ def get_series_metadata(series_id: str) -> dict:
         series_id: FRED series ID, e.g. "GDP"
     """
     return _guarded("get_series_metadata", {"series_id": series_id})
+
+
+@mcp.tool()
+def search_news(query: str, start_date: str, end_date: str) -> dict:
+    """
+    Search recent news headlines relevant to a topic.
+
+    Returns up to 10 headlines (title, source, published date, short
+    snippet) — never full article text, and never a summary/opinion of what
+    they say. Titles and snippets come back wrapped as untrusted data, same
+    pattern as get_series_metadata's 'notes' field.
+
+    Args:
+        query: e.g. "inflation", "federal reserve"
+        start_date: YYYY-MM-DD
+        end_date: YYYY-MM-DD
+    """
+    return _guarded("search_news", {
+        "query": query, "start_date": start_date, "end_date": end_date,
+    })
 
 
 @mcp.resource("fred://series/{series_id}/summary")
