@@ -21,6 +21,8 @@ jobs:
         run: ruff check .
       - name: Unit + integration tests
         run: pytest -q
+      - name: Orchestrator routing eval (prints the table)
+        run: python tests/test_routing.py
       - name: Evaluation suite (stub backend, hermetic)
         run: python -m evals
       - name: Upload eval report

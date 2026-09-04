@@ -50,7 +50,7 @@ CATALOG: dict[str, Series] = {
             "UNRATE", "Unemployment Rate", "Percent", "Monthly", "M",
             "Percent of the labor force that is unemployed. Seasonally adjusted.",
             aliases=("unemployment rate", "unemployment", "jobless rate", "joblessness"),
-            search_terms=("labor market", "jobs", "employment", "layoffs"),
+            search_terms=("labor market", "job market", "jobs", "hiring", "employment", "layoffs"),
             base=5.2, annual_drift=-0.1, seasonal_amp=0.3,
         ),
         Series(
@@ -144,12 +144,27 @@ def resolve(text: str) -> list[str]:
 def search(text: str, limit: int = 5) -> list[str]:
     """Rank the catalog against ``text`` by term overlap. Always returns
     something (the point of a search endpoint)."""
-    t = text.lower()
-    scored: list[tuple[int, int, str]] = []
-    for order, s in enumerate(CATALOG.values()):
-        if s.id == "INJTEST":
-            continue
-        score = sum(term in t for term in s.all_search_terms)
-        scored.append((-score, order, s.id))
-    scored.sort()
-    return [sid for _, _, sid in scored[:limit]]
+    ranked = [sid for sid, _ in score_query(text)]
+    for sid in CATALOG:  # pad so a search endpoint always returns rows
+        if sid != "INJTEST" and sid not in ranked:
+            ranked.append(sid)
+    return ranked[:limit]
+
+
+def score_query(text: str) -> list[tuple[str, int]]:
+    """Series ranked by how many of their alias/search terms appear in the
+    text, positive scores only.
+
+    An **empty** result means the query has no overlap with anything the
+    catalog knows about — the orchestrator reads that as "out of scope".
+    """
+    t = f" {text.lower()} "
+    order = list(CATALOG)
+    scored = [
+        (s.id, sum(1 for term in s.all_search_terms if term in t))
+        for s in CATALOG.values()
+        if s.id != "INJTEST"
+    ]
+    hits = [(sid, n) for sid, n in scored if n > 0]
+    hits.sort(key=lambda p: (-p[1], order.index(p[0])))
+    return hits

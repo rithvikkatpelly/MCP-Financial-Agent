@@ -62,14 +62,24 @@ class PipelineResult:
     parallel: bool = True
     error: str | None = None
 
+    # Orchestrator refusals that aren't failures of the pipeline itself — the
+    # orchestrator correctly declined to guess.
+    _ORCHESTRATOR_REFUSALS = ("cannot_fulfill", "needs_clarification")
+
     @property
     def answer(self) -> str:
+        if self.plan is not None and self.plan.clarification:
+            return self.plan.clarification
         if self.analysis and self.analysis.answer:
             return self.analysis.answer
+        if self.error in self._ORCHESTRATOR_REFUSALS:
+            return self.plan.detail if self.plan else self.error
         return f"No answer produced ({self.error})." if self.error else "No answer produced."
 
     @property
     def status(self) -> str:
+        if self.error in self._ORCHESTRATOR_REFUSALS:
+            return self.error
         if self.error:
             return "failed"
         if any(not r.ok for r in self.data):
