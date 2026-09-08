@@ -26,3 +26,5 @@ select = ["E", "F", "I", "UP", "B", "SIM"]
 # ambiguous, and the agent packages re-export names for convenience.
 "src/agents/__init__.py" = ["E402", "F401"]
 "evals/__init__.py" = ["E402"]
+# The demo UI puts src/ on sys.path before importing project modules.
+"streamlit_app.py" = ["E402"]

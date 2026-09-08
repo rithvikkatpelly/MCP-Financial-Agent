@@ -23,6 +23,7 @@ evaluation suite be hermetic and reproducible.
 
 - [What this demonstrates](#what-this-demonstrates)
 - [Quick start](#quick-start)
+- [Running the demo UI](#running-the-demo-ui)
 - [The lifecycle of one question](#the-lifecycle-of-one-question)
 - [Design](#design)
   - [1. Tool contracts](#1-tool-contracts)
@@ -78,6 +79,27 @@ Nothing above needs credentials. The orchestrator defaults to
 `AGENT_BACKEND=stub` (a deterministic planner), and `fred_client` serves a
 synthetic fixture whenever `FRED_API_KEY` is unset. Add the keys and both
 switch to the real thing — see [Running it live](#running-it-live).
+
+---
+
+## Running the demo UI
+
+A Streamlit page to click through the four FRED tools without an MCP client:
+
+```bash
+pip install -r requirements.txt   # pulls in streamlit + pandas
+streamlit run streamlit_app.py
+```
+
+It does **not** speak MCP. It imports `fred_client`, `cost_tracker` and
+`security` directly and reproduces each tool's real path — validate the input
+(`security`), show a pre-flight token estimate against the session budget
+(`cost_tracker`), fetch (`fred_client`), then run the same
+`guard_or_shrink` guardrail the MCP tool does. Structured errors
+(`{"error": "series_not_found", "suggestion": ...}`) surface as warnings, not
+tracebacks. Runs offline against the synthetic fixture unless `FRED_API_KEY`
+is set. `src/server.py` still serves the same logic to Claude Desktop over MCP
+separately — this is just a window onto it.
 
 ---
 
@@ -618,6 +640,7 @@ All optional; sensible defaults everywhere. See [`.env.example`](.env.example).
 ## Project layout
 
 ```
+streamlit_app.py    demo UI — the four FRED tools called directly (no MCP), validate → pre-flight → fetch → guardrail
 src/
   server.py         MCP server (FastMCP): 5 tools + 1 resource, rate limit + audit at the boundary
   tools.py          the one implementation of the 5 tools + their Anthropic JSON schemas
