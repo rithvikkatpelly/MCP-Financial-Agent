@@ -36,6 +36,7 @@ from dataclasses import asdict, dataclass, field
 from pathlib import Path
 
 import cost_tracker
+import security
 from agents import analysis_agent, data_agent, orchestrator, presentation_agent, timing
 from agents.analysis_agent import AnalysisResult
 from agents.data_agent import DataAgent, DataAgentResult
@@ -202,17 +203,26 @@ class PipelineResult:
 
 
 def _serialize(obj) -> str:
-    """What one agent hands the next, as a string, for token estimation."""
+    """A dataclass (or list of them) as a string, for token estimation."""
     if isinstance(obj, list):
         return json.dumps([asdict(o) for o in obj], default=str)
     return json.dumps(asdict(obj), default=str)
+
+
+def _handoff(from_agent: str, payload) -> str:
+    """One worker's output as it is handed to a *reasoning* stage — wrapped
+    via `security.wrap_agent_message` so, on the LLM-backed path, it lands in
+    the next agent's prompt labeled as data, not as instructions. The
+    deterministic pipeline passes the dataclass itself; this string is what
+    the trace log and token estimate see."""
+    return json.dumps(security.wrap_agent_message(from_agent, payload), default=str)
 
 
 def _serialize_combined(data_results: list[DataAgentResult], news_result) -> str:
     payload: dict = {"data": [asdict(r) for r in data_results]}
     if news_result is not None:
         payload["news"] = asdict(news_result)
-    return json.dumps(payload, default=str)
+    return _handoff("data+news_agents", payload)
 
 
 def _log(stage: StageTrace) -> None:
@@ -305,7 +315,7 @@ def _present_stage(result: PipelineResult, analysis: AnalysisResult) -> None:
     result.presentation = pres
     _record(
         result, "presentation_agent",
-        [sc("presentation_agent", _serialize(analysis), _serialize(pres))],
+        [sc("presentation_agent", _handoff("analysis_agent", asdict(analysis)), _serialize(pres))],
         f"analysis={analysis.error or 'ok'}", pres.summary, time.monotonic() - t0,
     )
 
