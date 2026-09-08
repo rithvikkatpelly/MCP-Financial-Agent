@@ -2,13 +2,17 @@
 The multi-agent pipeline, wired end to end.
 
     run_query(user_query)
-        → orchestrator.plan_query   (NL query → QueryPlan: which series, and/or
-                                     a news search, needs_data/needs_news explicit)
-        → Data Agent(s) + News Agent, concurrently when both are needed
-                                    (one asyncio.gather over both agent kinds)
-        → analysis_agent.analyze   ([DataAgentResult], NewsAgentResult|None
-                                     → AnalysisResult, "Data: ..." vs.
-                                     "Headlines suggest: ..." kept separate)
+        → orchestrator.plan_query      (NL query → QueryPlan: which series,
+                                        and/or a news search — explicit)
+        → Data Agent(s) + News Agent   (concurrently when both are needed —
+                                        one asyncio.gather over both kinds,
+                                        each call retried on a transient error)
+        → analysis_agent.analyze       ([DataAgentResult], NewsAgentResult|None
+                                        → AnalysisResult — structured numbers,
+                                        no prose)
+        → presentation_agent.present   (AnalysisResult → PresentationResult —
+                                        "Data:" vs. "Headlines suggest:",
+                                        bounded, safe failure labels)
         → PipelineResult
 
 Every hand-off passes a typed dataclass — never raw strings or conversation
@@ -32,11 +36,12 @@ from dataclasses import asdict, dataclass, field
 from pathlib import Path
 
 import cost_tracker
-from agents import analysis_agent, data_agent, orchestrator, timing
+from agents import analysis_agent, data_agent, orchestrator, presentation_agent, timing
 from agents.analysis_agent import AnalysisResult
 from agents.data_agent import DataAgent, DataAgentResult
 from agents.news_agent import NewsAgent, NewsAgentResult
 from agents.orchestrator import QueryPlan
+from agents.presentation_agent import PresentationResult
 
 _DEFAULT_TRACE_PATH = Path(__file__).parent.parent / "agent_trace.log"
 
@@ -62,6 +67,7 @@ class PipelineResult:
     data: list[DataAgentResult] = field(default_factory=list)
     news: NewsAgentResult | None = None
     analysis: AnalysisResult | None = None
+    presentation: PresentationResult | None = None
     trace: list[StageTrace] = field(default_factory=list)
     run_cost: cost_tracker.RunCost = field(default_factory=cost_tracker.RunCost)
     wall_seconds: float = 0.0
@@ -77,8 +83,8 @@ class PipelineResult:
     def answer(self) -> str:
         if self.plan is not None and self.plan.clarification:
             return self.plan.clarification
-        if self.analysis and self.analysis.answer:
-            return self.analysis.answer
+        if self.presentation and self.presentation.summary:
+            return self.presentation.summary
         if self.error in self._ORCHESTRATOR_REFUSALS:
             return self.plan.detail if self.plan else self.error
         return f"No answer produced ({self.error})." if self.error else "No answer produced."
@@ -140,6 +146,7 @@ class PipelineResult:
             "data": [asdict(r) for r in self.data],
             "news": asdict(self.news) if self.news else None,
             "analysis": asdict(self.analysis) if self.analysis else None,
+            "presentation": asdict(self.presentation) if self.presentation else None,
             "trace": [asdict(t) for t in self.trace],
         }
 
@@ -237,6 +244,21 @@ async def _gather_sources(
     return [await t.run() for t in tasks]
 
 
+def _present_stage(result: PipelineResult, analysis: AnalysisResult) -> None:
+    """Run the Presentation Agent and record it as its own pipeline stage —
+    the Analysis Agent produces only structured numbers now, formatting is
+    separate."""
+    sc = cost_tracker.stage_cost
+    t0 = time.monotonic()
+    pres = presentation_agent.present(analysis)
+    result.presentation = pres
+    _record(
+        result, "presentation_agent",
+        [sc("presentation_agent", _serialize(analysis), _serialize(pres))],
+        f"analysis={analysis.error or 'ok'}", pres.summary, time.monotonic() - t0,
+    )
+
+
 def run_query(
     user_query: str,
     *,
@@ -297,11 +319,13 @@ def run_query(
     requested = [x for x in (data_ok, news_ok) if x is not None]
     if requested and not any(requested):
         result.error = "all_sources_failed"
-        result.analysis = analysis_agent.analyze(data_results, news_result)  # failure note
+        analysis = analysis_agent.analyze(data_results, news_result)  # failure note
+        result.analysis = analysis
+        _present_stage(result, analysis)
         result.wall_seconds = time.monotonic() - run_started
         return result
 
-    # 3. Analysis Agent — no tool access, reasons over both sources ---
+    # 3. Analysis Agent — no tool access, structured numbers only -----
     t0 = time.monotonic()
     analysis = analysis_agent.analyze(data_results, news_result)
     result.analysis = analysis
@@ -310,8 +334,12 @@ def run_query(
         result, "analysis_agent",
         [sc("analysis_agent", analysis_in, _serialize(analysis))],
         f"data={_data_summary(data_results)}; news={_news_summary(news_result)}",
-        analysis.answer, time.monotonic() - t0,
+        f"per_series={len(analysis.per_series)} cross={analysis.cross_series is not None}",
+        time.monotonic() - t0,
     )
+
+    # 4. Presentation Agent — structured numbers → bounded summary -----
+    _present_stage(result, analysis)
 
     if not analysis.ok:
         result.error = analysis.error

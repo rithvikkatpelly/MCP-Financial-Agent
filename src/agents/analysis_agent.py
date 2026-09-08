@@ -20,12 +20,10 @@ in a headline has no path into the output, whatever it says, because nothing
 downstream ever copies headline text into the answer.
 
 Input is a **list** of `DataAgentResult` (one per series) plus an optional
-`NewsAgentResult`. Output clearly separates the two:
-  "Data: ..."               — numeric, sourced from FRED, computed here
-  "Headlines suggest: ..."  — topic words matched against reporting; explicitly
-                              hedged as unverified, never presented as fact
-
-A narrative Report Agent is a later phase.
+`NewsAgentResult`. Output is purely structural — per-series stats,
+cross-series correlation, matched news themes, and the list of failed series.
+Turning that into prose is the Presentation Agent's job
+(`agents/presentation_agent.py`); this module produces no user-facing string.
 """
 
 from __future__ import annotations
@@ -74,7 +72,6 @@ class NewsAnalysis:
 
 @dataclass
 class AnalysisResult:
-    answer: str = ""
     per_series: list[SeriesAnalysis] = field(default_factory=list)
     cross_series: CrossSeriesAnalysis | None = None
     news: NewsAnalysis | None = None
@@ -83,7 +80,9 @@ class AnalysisResult:
 
     @property
     def ok(self) -> bool:
-        return self.error is None and bool(self.per_series or (self.news and not self.news.error))
+        has_data = any(a.error is None for a in self.per_series)
+        has_news = self.news is not None and self.news.error is None
+        return self.error is None and (has_data or has_news)
 
 
 # --- numeric helpers ---------------------------------------------------
@@ -269,9 +268,9 @@ def analyze(
     results: list[DataAgentResult], news: NewsAgentResult | None = None
 ) -> AnalysisResult:
     """Descriptive + cross-series stats over the Data Agent results, plus an
-    optional News Agent result. No tool access; cost is accounted for by the
-    orchestration layer. Partial input is fine on either side — a failed
-    series, a failed news call, or a query that only used one source is all
+    optional News Agent result. No tool access; no user-facing string (that's
+    the Presentation Agent). Partial input is fine on either side — a failed
+    series, a failed news call, or a query that used only one source is all
     handled; only "nothing usable from either source" is an error.
     """
     ok = [r for r in results if r.ok and r.series is not None]
@@ -283,7 +282,6 @@ def analyze(
 
     per_series: list[SeriesAnalysis] = []
     cross: CrossSeriesAnalysis | None = None
-    data_parts: list[str] = []
     if ok:
         per_series = [_analyze_series(r.series) for r in ok]
         usable = [a for a in per_series if a.error is None]
@@ -291,49 +289,17 @@ def analyze(
             _analyze_cross_series([r.series for r in ok], per_series)
             if len(usable) >= 2 else None
         )
-        data_parts = [a.summary for a in usable]
-        if cross and cross.summary:
-            data_parts.append(cross.summary)
 
-    news_analysis: NewsAnalysis | None = None
-    news_parts: list[str] = []
-    if news is not None:
-        news_analysis = _analyze_news(news)
-        if news_analysis.error is None:
-            news_parts = [news_analysis.summary]
+    news_analysis = _analyze_news(news) if news is not None else None
 
-    if not data_parts and not news_parts:
-        bits = []
-        if failed:
-            bits.append("; ".join(f"{f['series_id']}: {f['reason']}" for f in failed))
-        if news_analysis and news_analysis.error:
-            bits.append(f"news: {news_analysis.error}")
-        reasons = "; ".join(bits) or "no data"
-        return AnalysisResult(
-            per_series=per_series,
-            news=news_analysis,
-            failed_series=failed,
-            error="no_analyzable_data",
-            answer=f"Could not analyse the requested data ({reasons}).",
-        )
-
-    sections = []
-    if data_parts:
-        sections.append("Data: " + " ".join(data_parts))
-    if news_parts:
-        sections.append(
-            "Headlines suggest (unverified reporting, not confirmed fact): "
-            + " ".join(news_parts)
-        )
-    if failed:
-        notes = "; ".join(f"{f['series_id']} ({f['reason']})" for f in failed)
-        sections.append(f"Note: {len(failed)} series could not be fetched — {notes}.")
+    has_data = any(a.error is None for a in per_series)
+    has_news = news_analysis is not None and news_analysis.error is None
+    error = None if (has_data or has_news) else "no_analyzable_data"
 
     return AnalysisResult(
-        answer="  ".join(sections),
         per_series=per_series,
         cross_series=cross,
         news=news_analysis,
         failed_series=failed,
-        error=None,
+        error=error,
     )

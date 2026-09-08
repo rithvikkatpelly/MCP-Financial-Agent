@@ -75,7 +75,7 @@ def test_plan_records_single_vs_comparison_mode(cpi_run):
 def test_cost_is_tracked_per_agent_and_totaled(cpi_run):
     cost = cpi_run.cost
     stages = [row["stage"] for row in cost["per_agent"]]
-    assert stages == ["orchestrator", "data_agent", "analysis_agent"]
+    assert stages == ["orchestrator", "data_agent", "analysis_agent", "presentation_agent"]
 
     summed = round(sum(row["estimated_usd"] for row in cost["per_agent"]), 6)
     assert cost["total"]["estimated_usd"] == summed
@@ -125,7 +125,7 @@ def test_injection_payload_in_notes_never_enters_the_analysis():
     assert inj is not None and inj.ok
 
     markers = ("ignore all previous instructions", "developer mode", "attacker@example.com")
-    blob = " ".join([run.analysis.answer] + [a.summary for a in run.analysis.per_series]).lower()
+    blob = " ".join([run.answer] + [a.summary for a in run.analysis.per_series]).lower()
     for marker in markers:
         assert marker not in blob
 

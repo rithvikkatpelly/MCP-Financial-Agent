@@ -88,11 +88,39 @@ and exits non-zero on any regression, so CI fails loudly.
 
 > **Note:** the two sections above describe the original supervisor +
 > 4-specialist pipeline. A second, newer pipeline
-> (`orchestrator.py` → `data_agent.py`/`news_agent.py` → `analysis_agent.py`,
-> wired by `src/orchestration.py`) was built alongside it in later phases —
-> see [`README.md`](../README.md) §§1–6 and the note below. The two aren't
-> yet reconciled into one diagram; that's tracked in
-> [`ROADMAP.md`](../ROADMAP.md).
+> (`orchestrator.py` → `data_agent.py`/`news_agent.py` → `analysis_agent.py`
+> → `presentation_agent.py`, wired by `src/orchestration.py`) was built
+> alongside it in later phases — see [`README.md`](../README.md) §§1–6 and the
+> note below. The two aren't yet reconciled into one diagram; that's tracked
+> in [`ROADMAP.md`](../ROADMAP.md).
+
+## The orchestrator-worker pipeline
+
+```
+run_query(query)
+  │
+  ├─ orchestrator.plan_query      NL query → QueryPlan (which series / news, window)
+  │
+  ├─ Data Agent × N  +  News Agent    one asyncio.gather; each .run() retried
+  │     │                              once on a transient error before the
+  │     ▼                              existing skip/degrade path
+  │  [DataAgentResult], NewsAgentResult
+  │
+  ├─ analysis_agent.analyze      → AnalysisResult   (numbers only: %-change,
+  │                                                  annualised rate, Pearson
+  │                                                  correlation, matched news
+  │                                                  themes, failed-series list)
+  │
+  └─ presentation_agent.present  → PresentationResult  (bounded sectioned
+                                                        summary; failure reasons
+                                                        mapped to safe labels)
+```
+
+Each stage hands the next a typed dataclass — never free text to re-parse.
+`analysis_agent` computes; `presentation_agent` formats; the split keeps the
+numeric layer with no user-facing-string concerns and the formatting layer
+with no maths. Both are import-restricted (a test asserts neither can reach a
+tool / FRED / the news API / the network).
 
 ## Phase 4: a second, heterogeneous source
 
