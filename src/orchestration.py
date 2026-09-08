@@ -50,6 +50,53 @@ def _trace_path() -> Path:
     return Path(os.environ.get("AGENT_TRACE_PATH", _DEFAULT_TRACE_PATH))
 
 
+# --- retry policy for one worker call --------------------------------------
+#
+# A worker's `.run()` never raises; it returns a result carrying a `.error` /
+# `.failure_reason` string. We retry that call only for errors that a second
+# attempt could plausibly fix — a rate limit, a provider 5xx, a network blip —
+# never for a bad series ID or a blown token budget. Bounded and cheap; the
+# existing skip/degrade path in analyze()/present() still handles a failure
+# that survives all attempts. Retry attempts are counted (PipelineResult.retries)
+# but not separately cost-metered — the cost figure stays "one entry per
+# source", a small under-count in live mode if a transient blip burned tokens.
+_TRANSIENT_MARKERS = (
+    "rate_limited", "fred_api_error", "news_api_error",
+    "_exception", "timeout", "timed out", "temporarily",
+)
+
+
+def _retry_attempts() -> int:
+    return max(int(os.environ.get("AGENT_RETRY_ATTEMPTS", "2")), 1)
+
+
+def _retry_backoff_s() -> float:
+    return max(float(os.environ.get("AGENT_RETRY_BACKOFF_MS", "0")), 0.0) / 1000.0
+
+
+def _result_error(r: object) -> str | None:
+    # DataAgentResult.failure_reason covers request- and series-level; NewsAgentResult.error.
+    return getattr(r, "failure_reason", None) or getattr(r, "error", None)
+
+
+def _is_transient(reason: str | None) -> bool:
+    return bool(reason) and any(m in reason for m in _TRANSIENT_MARKERS)
+
+
+async def _run_with_retry(agent) -> tuple[object, int]:
+    """Run agent.run(); on a transient failure, retry up to AGENT_RETRY_ATTEMPTS
+    total (default 2). Returns (result, attempts_used)."""
+    attempts, backoff = _retry_attempts(), _retry_backoff_s()
+    last = None
+    for attempt in range(1, attempts + 1):
+        last = await agent.run()
+        if attempt == attempts or not _is_transient(_result_error(last)):
+            return last, attempt
+        if backoff:
+            await asyncio.sleep(backoff * (2 ** (attempt - 1)))
+    return last, attempts
+
+
 @dataclass
 class StageTrace:
     stage: str
@@ -73,6 +120,8 @@ class PipelineResult:
     wall_seconds: float = 0.0
     sources_overlapped: bool = False  # did Data Agent(s) and News Agent truly run concurrently?
     parallel: bool = True
+    # {series_id | "news": total attempts}, entries only where a retry fired
+    retries: dict[str, int] = field(default_factory=dict)
     error: str | None = None
 
     # Orchestrator refusals that aren't failures of the pipeline itself — the
@@ -138,6 +187,7 @@ class PipelineResult:
             "sources": list(self.plan.sources) if self.plan else [],
             "sources_overlapped": self.sources_overlapped,
             "parallel": self.parallel,
+            "retries": self.retries,
             "wall_seconds": round(self.wall_seconds, 4),
             "failures": self.failures,
             "news_failure": self.news_failure,
@@ -231,17 +281,18 @@ def _record(
 
 async def _gather_sources(
     data_agents: list[DataAgent], news_obj: NewsAgent | None, *, parallel: bool
-) -> list:
+) -> list[tuple[object, int]]:
     """One shared gather for both agent kinds — this is what makes Data
     Agent(s) and the News Agent run *concurrently*, not the data batch then
-    the news call. `parallel=False` keeps the same code path but awaits one
-    at a time (used to benchmark the difference, same pattern as phase 2)."""
+    the news call. Each `.run()` goes through `_run_with_retry`. Returns
+    `[(result, attempts_used), ...]` in task order (data agents, then news).
+    `parallel=False` keeps the same code path but awaits one at a time."""
     tasks = list(data_agents) + ([news_obj] if news_obj is not None else [])
     if not tasks:
         return []
     if parallel:
-        return list(await asyncio.gather(*(t.run() for t in tasks)))
-    return [await t.run() for t in tasks]
+        return list(await asyncio.gather(*(_run_with_retry(t) for t in tasks)))
+    return [await _run_with_retry(t) for t in tasks]
 
 
 def _present_stage(result: PipelineResult, analysis: AnalysisResult) -> None:
@@ -293,7 +344,8 @@ def run_query(
         NewsAgent(plan.news_query, plan.news_start_date, plan.news_end_date)
         if plan.needs_news else None
     )
-    all_results = asyncio.run(_gather_sources(data_agents, news_obj, parallel=parallel))
+    gathered = asyncio.run(_gather_sources(data_agents, news_obj, parallel=parallel))
+    all_results = [r for r, _ in gathered]
     data_results: list[DataAgentResult] = all_results[: len(data_agents)]
     news_result: NewsAgentResult | None = all_results[len(data_agents)] if news_obj else None
     result.data = data_results
@@ -301,18 +353,25 @@ def run_query(
     result.sources_overlapped = timing.overlapped(
         list(data_agents) + ([news_obj] if news_obj else [])
     )
+    for i, (_, attempts) in enumerate(gathered):
+        if attempts > 1:
+            key = data_agents[i].request.series_id if i < len(data_agents) else "news"
+            result.retries[key] = attempts
 
     plan_json = _serialize(plan)
     if data_agents:
         data_costs = [sc("data_agent", plan_json, _serialize(r)) for r in data_results]
+        retried = {k: v for k, v in result.retries.items() if k != "news"}
         _record(result, "data_agent", data_costs,
-                _plan_summary(plan), _data_summary(data_results),
+                _plan_summary(plan),
+                _data_summary(data_results) + (f" [retried: {retried}]" if retried else ""),
                 timing.stage_wall_seconds(data_agents))
     if news_obj:
         news_costs = [sc("news_agent", plan.news_query, _serialize(news_result))]
+        news_retry = f" [retried x{result.retries['news']}]" if "news" in result.retries else ""
         _record(result, "news_agent", news_costs,
                 f"query={plan.news_query!r} window={plan.news_start_date}..{plan.news_end_date}",
-                _news_summary(news_result), news_obj.elapsed)
+                _news_summary(news_result) + news_retry, news_obj.elapsed)
 
     data_ok = any(r.ok for r in data_results) if data_agents else None
     news_ok = news_result.ok if news_obj else None

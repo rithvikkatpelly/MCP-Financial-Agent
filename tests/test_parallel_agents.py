@@ -81,6 +81,9 @@ def test_one_bad_series_id_does_not_crash_the_run():
     assert ok_ids == ["CPIAUCSL", "DGS10"]
     assert len(run.analysis.per_series) == 2
     assert "FAKESERIES" in run.answer  # the answer notes the failure
+    # fred_api_error is treated as transient, so the bad series was retried
+    # once before being degraded — the good series were not.
+    assert run.retries == {"FAKESERIES": 2}
 
 
 def test_all_series_failing_is_a_clean_failure_not_a_crash():

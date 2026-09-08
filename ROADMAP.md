@@ -27,6 +27,12 @@ reads as a development story rather than one drop.
       agent, typed dataclass hand-offs, per-agent + running-total cost
 - [x] **Multi-series parallelism** — one Data Agent per series via
       `asyncio.gather`, partial-failure tolerance, cross-series correlation
+- [x] **Per-worker retry** — each `.run()` retried once on a transient error
+      (rate limit / provider 5xx / blip) before the skip/degrade path;
+      `PipelineResult.retries` records where it fired
+- [x] **Presentation worker** — `analysis_agent` does only maths;
+      `presentation_agent` does only formatting (bounded, sectioned, safe
+      failure labels). Both import-restricted like the Analysis Agent.
 - [x] **Orchestrator routing eval** — 18 structural cases (single/comparison/
       cap/ambiguous/out-of-scope/injection/vague-date), 15 passing + 3 tracked
       `xfail` gaps
