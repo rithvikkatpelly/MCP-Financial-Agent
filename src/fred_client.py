@@ -24,13 +24,16 @@ from datetime import date, timedelta
 import httpx
 
 import catalog
+from cache import TTLCache
 
 FRED_BASE_URL = "https://api.stlouisfed.org/fred"
 
-# Cache key -> response dict. Since every tool call is validated and
-# normalized (uppercase series ID, parsed dates) before it reaches here,
-# identical logical requests always produce identical cache keys.
-_cache: dict[str, dict] = {}
+# Idempotency cache. Every tool call is validated and normalized (uppercase
+# series ID, parsed dates) before it reaches here, so identical logical
+# requests always produce identical keys. sqlite-backed with a TTL — FRED
+# data for a closed window is immutable, so the default is long. See
+# src/cache.py; set CACHE_PATH to persist it across restarts.
+_cache = TTLCache(ttl_seconds=float(os.environ.get("FRED_CACHE_TTL_SECONDS", "86400")))
 
 
 class FredAPIError(Exception):

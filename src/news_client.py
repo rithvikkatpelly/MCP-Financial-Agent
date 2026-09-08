@@ -27,12 +27,15 @@ import time
 
 import httpx
 
+from cache import TTLCache
+
 NEWS_API_URL = "https://newsapi.org/v2/everything"
 MAX_HEADLINES = 10
 
-# Cache key -> list of headline dicts. Keyed on the normalized query + window,
-# same idempotency shape as fred_client._cache.
-_cache: dict[str, list[dict]] = {}
+# Same idempotency shape as fred_client._cache — sqlite-backed with a TTL
+# (src/cache.py). Shorter default than FRED: "recent" headlines for an
+# open-ended window do shift. Set CACHE_PATH to persist across restarts.
+_cache = TTLCache(ttl_seconds=float(os.environ.get("NEWS_CACHE_TTL_SECONDS", "3600")))
 
 
 class NewsAPIError(Exception):

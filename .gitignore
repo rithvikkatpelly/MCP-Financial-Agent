@@ -6,6 +6,10 @@ usage.log
 audit.log
 agent_trace.log
 
+# Persisted cache (only when CACHE_PATH is set to a file under here)
+.cache/
+*.sqlite
+
 # Python
 __pycache__/
 *.pyc

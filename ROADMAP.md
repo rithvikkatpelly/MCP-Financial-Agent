@@ -51,7 +51,10 @@ reads as a development story rather than one drop.
 - [ ] Relative-event and compound date parsing in the orchestrator
 - [ ] Reconcile the two agent pipelines (supervisor+specialists vs.
       orchestrator/data+news/analysis) into one diagram and one eval harness
-- [ ] Swap the dict cache for SQLite + TTL
+- [x] **SQLite TTL cache** — `src/cache.py` `TTLCache` replaces the plain
+      dict in `fred_client` / `news_client` (drop-in: same `key in c`,
+      `c[key]`, iteration). Per-entry expiry; `:memory:` by default,
+      `CACHE_PATH` to persist across restarts.
 - [ ] Expand the supervisor eval dataset toward 50 cases; add adversarial queries
 - [ ] Live-backend eval run in CI (gated, on a schedule, with a spend cap)
 - [ ] Streaming the supervisor's progress (per-delegation events)

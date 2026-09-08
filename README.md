@@ -191,8 +191,12 @@ Properties every tool has:
   `{"error": "validation_error", "detail": "..."}`. The model gets a signal it
   can act on instead of a stack trace, and the orchestrator never has to
   wrap tool calls in try/except.
-- **Idempotency.** `fred_client` keys a dict cache on the normalised
-  arguments, so calling a tool twice with the same inputs is one network hit.
+- **Idempotency.** `fred_client` / `news_client` key a cache on the
+  normalised arguments, so calling a tool twice with the same inputs is one
+  network hit. The cache is [`src/cache.py`](src/cache.py) `TTLCache` —
+  sqlite-backed with a per-entry TTL (FRED data for a closed window is
+  immutable; "recent" news isn't, so it gets a shorter TTL). `:memory:` by
+  default; set `CACHE_PATH` to a file to persist it across restarts.
 - **One implementation.** The bodies live in [`src/tools.py`](src/tools.py).
   [`server.py`](src/server.py) wraps each in `@mcp.tool()`; the agents call
   the same functions via `tools.call_tool`. The MCP contract and the agent
@@ -620,16 +624,18 @@ src/
   catalog.py        every series the project knows: FRED metadata, aliases, search terms, fixture shape
   fred_client.py    cached FRED wrapper; renders the synthetic fixture in offline mode
   news_client.py    cached news-headline wrapper; mirrors fred_client.py exactly
+  cache.py          TTLCache — sqlite-backed idempotency cache with per-entry expiry
   cost_tracker.py   token/cost estimation, per-session + per-run budget, shrink-or-refuse guardrail
-  security.py       input validation, untrusted-content wrapping, secret redaction
+  security.py       input validation, untrusted-content + inter-agent-message wrapping, secret redaction
   rate_limit.py     token-bucket rate limiter
   audit_log.py      append-only JSONL security audit log
-  orchestration.py  run_query(): wires orchestrator → Data/News Agent(s) → Analysis Agent
+  orchestration.py  run_query(): orchestrator → Data/News Agent(s) [retried] → Analysis → Presentation
   agents/
     orchestrator.py    NL query → QueryPlan (series and/or news, explicit needs_data/needs_news)
     data_agent.py      one DataAgent per series; only agent with FRED tool access
     news_agent.py      one NewsAgent per query; only agent with search_news access
-    analysis_agent.py  reasons over both; no tool access; "Data:" vs "Headlines suggest:"
+    analysis_agent.py  structured numbers only (%-change, correlation, themes); no tool access
+    presentation_agent.py  AnalysisResult → bounded sectioned summary; safe failure labels
     timing.py          shared concurrency-overlap check for both agent kinds
     base.py            the tool-use loop for the older supervisor pipeline below
     supervisor.py      decomposes the question, delegates to specialists
