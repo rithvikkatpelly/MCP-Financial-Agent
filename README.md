@@ -508,6 +508,23 @@ no series and comes back `cannot_fulfill`, identical to *"what's the weather
 tomorrow"*. There is no keyword blocklist; when this orchestrator is swapped
 for an LLM planner, the defence is a tightly-scoped system prompt.
 
+#### Pipeline eval
+
+`test_routing.py` checks the *plan*; its sibling
+[`tests/test_pipeline_eval.py`](tests/test_pipeline_eval.py) (cases in
+[`eval_cases.py`](tests/eval_cases.py) `PIPELINE_CASES`) runs the *whole*
+pipeline through `run_query` — still offline and deterministic — and checks
+**execution**: which workers ran (`data_agent` / `news_agent` /
+`analysis_agent` / `presentation_agent` in the trace), whether a retry fired
+(`result.retries`), whether a run degraded gracefully (`status == "partial"`
+with the failures listed) or refused cleanly (`status == "cannot_fulfill" /
+"needs_clarification"` with only the orchestrator stage), and whether the
+answer matches what the routing implied. **8/8 passing** — one of them
+(`pp4_news_only`) caught a real bug while being written: a news query with no
+explicit dates defaulted to a 5-year window, which `search_news` rejects; the
+orchestrator now clamps the news window to 60 days independently of the data
+window and flags the clamp.
+
 ---
 
 ## Offline by default, live when you want it
@@ -632,7 +649,7 @@ examples/
   bench_parallel.py  sequential vs. parallel Data Agent latency, real numbers
   measure.py         regenerates docs/measurements.md from the offline fixture
 tests/  catalog, fred + news clients, security (incl. news injection), rate limit, audit,
-        both agent pipelines, routing eval, evals — 91 tests, hermetic, ~1.5s
+        both agent pipelines, routing eval, evals — 106 tests, hermetic, ~1.5s
 docs/
   architecture.md   diagrams + the guardrail-by-layer table
   measurements.md   generated context/cost numbers
@@ -643,7 +660,7 @@ docs/
 ## Testing
 
 ```bash
-pytest -q          # 91 tests, no network, deterministic, ~1.5s
+pytest -q          # 106 tests, no network, deterministic, ~1.5s
 ruff check .       # lint (config in pyproject.toml)
 python -m evals    # the eval suite is also a test (test_evals.py runs it)
 ```

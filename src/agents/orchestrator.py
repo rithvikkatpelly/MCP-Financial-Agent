@@ -36,7 +36,7 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass
-from datetime import date
+from datetime import date, timedelta
 
 import catalog
 
@@ -191,6 +191,28 @@ def _parse_window(query: str, today: date | None = None) -> tuple[str, str, str,
     return start.isoformat(), today.isoformat(), freq, (note,)
 
 
+# News coverage is shallow (NewsAPI's free tier is ~1 month; `search_news`
+# rejects ranges over a year). The data window can be years wide; the news
+# window is clamped to this, independently, and the clamp is flagged.
+_NEWS_MAX_WINDOW_DAYS = 60
+
+
+def _news_window(start: str, end: str) -> tuple[str, str, str]:
+    """(news_start, news_end, note) — clamps a wide data window down to
+    something `search_news` accepts."""
+    try:
+        s, e = date.fromisoformat(start), date.fromisoformat(end)
+    except ValueError:
+        return start, end, ""
+    floor = e - timedelta(days=_NEWS_MAX_WINDOW_DAYS)
+    if s >= floor:
+        return start, end, ""
+    return floor.isoformat(), end, (
+        f"news coverage is shallow; searched news only over {floor.isoformat()}..{end} "
+        f"(the data window is wider)"
+    )
+
+
 # --- planning ---------------------------------------------------------
 
 
@@ -229,21 +251,25 @@ def plan_query(user_query: str, today: date | None = None) -> QueryPlan:
             for sid in exact
         )
         comparison = len(fetches) > 1
+        news_start, news_end, news_note = _news_window(start, end)
         data_note = f", plus Data Agent for {', '.join(exact)}" if needs_data else ""
-        rationale = f"News Agent for {q!r}{data_note}. Window {start}..{end}."
+        rationale = (
+            f"News Agent for {q!r} ({news_start}..{news_end}){data_note}"
+            + (f" over {start}..{end}" if needs_data else "") + "."
+        )
         return QueryPlan(
             user_query=user_query,
             fetches=fetches,
             rationale=rationale,
             comparison=comparison,
             resolution="exact" if needs_data else "none",
-            assumptions=assumptions,
+            assumptions=assumptions + ((news_note,) if news_note else ()),
             requested_series=len(exact),
             needs_data=needs_data,
             needs_news=True,
             news_query=q,
-            news_start_date=start,
-            news_end_date=end,
+            news_start_date=news_start,
+            news_end_date=news_end,
         )
 
     # --- pure data queries (unchanged from phases 1-3) -------------------

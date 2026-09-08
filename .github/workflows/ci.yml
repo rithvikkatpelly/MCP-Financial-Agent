@@ -23,6 +23,8 @@ jobs:
         run: pytest -q
       - name: Orchestrator routing eval (prints the table)
         run: python tests/test_routing.py
+      - name: Pipeline eval — worker routing / retry / degradation (prints the table)
+        run: python tests/test_pipeline_eval.py
       - name: Evaluation suite (stub backend, hermetic)
         run: python -m evals
       - name: Upload eval report

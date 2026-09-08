@@ -161,3 +161,163 @@ ROUTING_CASES: list[RoutingCase] = [
               "the two-point-in-time intent is lost.",
     ),
 ]
+
+
+# =====================================================================
+# Pipeline-level eval — runs the *whole* pipeline (offline, deterministic)
+# and checks which workers ran, whether a retry fired, and whether the run
+# degraded gracefully. This is the "routing decisions, not just tool
+# selection" layer: `test_routing` checks the plan; this checks execution.
+# =====================================================================
+
+Result = object  # orchestration.PipelineResult
+
+
+@dataclass
+class PipelineCase:
+    id: str
+    category: str
+    query: str
+    check: Callable[[Result], list[str]]
+    series: list[str] | None = None  # if set, run with an explicit plan_for_series
+    xfail: str = ""
+
+
+def expect_pipeline(**exp) -> Callable[[Result], list[str]]:
+    def check(r) -> list[str]:
+        p: list[str] = []
+        stages = [t.stage for t in r.trace]
+
+        if "status" in exp:
+            want = exp["status"]
+            allowed = set(want) if isinstance(want, (set, list, tuple)) else {want}
+            if r.status not in allowed:
+                p.append(f"status={r.status!r}, expected one of {allowed}")
+
+        if "stages" in exp and stages != exp["stages"]:
+            p.append(f"stages={stages}, expected {exp['stages']}")
+
+        if "stages_include" in exp:
+            missing = [s for s in exp["stages_include"] if s not in stages]
+            if missing:
+                p.append(f"stages missing {missing} (got {stages})")
+
+        if "stages_exclude" in exp:
+            present = [s for s in exp["stages_exclude"] if s in stages]
+            if present:
+                p.append(f"stages should not include {present} (got {stages})")
+
+        if "sources" in exp:
+            got = set(r.plan.sources) if r.plan else set()
+            if got != set(exp["sources"]):
+                p.append(f"sources={got}, expected {set(exp['sources'])}")
+
+        if "retried" in exp:
+            fired = bool(r.retries)
+            if fired != exp["retried"]:
+                p.append(f"retries={r.retries}, expected {'a retry' if exp['retried'] else 'none'}")
+
+        if "retries" in exp and r.retries != exp["retries"]:
+            p.append(f"retries={r.retries}, expected {exp['retries']}")
+
+        if exp.get("degraded") and r.status != "partial":
+            p.append(f"expected a degraded (partial) run, got status={r.status!r}")
+
+        for needle in _as_list(exp.get("answer_contains")):
+            if needle.lower() not in r.answer.lower():
+                p.append(f"answer missing {needle!r}")
+
+        for needle in _as_list(exp.get("answer_excludes")):
+            if needle.lower() in r.answer.lower():
+                p.append(f"answer leaked {needle!r}")
+
+        if "answer_prefix" in exp and not r.answer.startswith(exp["answer_prefix"]):
+            p.append(f"answer does not start with {exp['answer_prefix']!r}: {r.answer[:40]!r}")
+
+        return p
+
+    return check
+
+
+def _as_list(v) -> list[str]:
+    if v is None:
+        return []
+    return [v] if isinstance(v, str) else list(v)
+
+
+PIPELINE_CASES: list[PipelineCase] = [
+    PipelineCase(
+        "pp1_single_data", "data-only",
+        "How has CPI changed over the last 5 years?",
+        expect_pipeline(
+            status="ok", sources={"data"}, retried=False,
+            stages=["orchestrator", "data_agent", "analysis_agent", "presentation_agent"],
+            answer_prefix="Data:", answer_contains="CPIAUCSL",
+        ),
+    ),
+    PipelineCase(
+        "pp2_comparison", "data-only",
+        "Compare CPI and unemployment over the last 5 years",
+        expect_pipeline(
+            status="ok", sources={"data"},
+            stages_include=["data_agent", "analysis_agent", "presentation_agent"],
+            answer_contains=["CPIAUCSL", "UNRATE", "correlation"],
+        ),
+    ),
+    PipelineCase(
+        "pp3_data_and_news", "cross-source",
+        "What's driving recent inflation news?",
+        expect_pipeline(
+            status="ok", sources={"data", "news"},
+            stages_include=["data_agent", "news_agent", "analysis_agent", "presentation_agent"],
+            answer_contains=["Data:", "Headlines suggest"],
+        ),
+    ),
+    PipelineCase(
+        "pp4_news_only", "news-only",
+        "What are the top headlines about the Fed this week?",
+        expect_pipeline(
+            status="ok", sources={"news"},
+            stages_exclude=["data_agent"],
+            stages_include=["news_agent", "presentation_agent"],
+            answer_contains="Headlines suggest",
+        ),
+    ),
+    PipelineCase(
+        "pp5_out_of_scope", "refusal",
+        "What's the weather going to be tomorrow?",
+        expect_pipeline(
+            status="cannot_fulfill", stages=["orchestrator"], sources=set(),
+        ),
+    ),
+    PipelineCase(
+        "pp6_needs_clarification", "refusal",
+        "Compare unemployment, headline CPI, core CPI, core PCE, the fed funds "
+        "rate, and GDP over the last 5 years",
+        expect_pipeline(
+            status="needs_clarification", stages=["orchestrator"],
+            answer_contains="which 4",
+        ),
+    ),
+    PipelineCase(
+        "pp7_partial_failure", "degraded",
+        "Compare CPI, unemployment, and the 10-year treasury rate over the last 5 years",
+        expect_pipeline(
+            status="partial", degraded=True, retries={"FAKESERIES": 2},
+            stages_include=["data_agent", "analysis_agent", "presentation_agent"],
+            answer_contains=["CPIAUCSL", "FAKESERIES", "could not be fetched"],
+            answer_excludes=["fred_api_error"],  # raw code mapped to a safe label
+        ),
+        series=["CPIAUCSL", "FAKESERIES", "DGS10"],
+    ),
+    PipelineCase(
+        "pp8_all_sources_failed", "degraded",
+        "compare nonsense series",
+        expect_pipeline(
+            status="failed",
+            stages_include=["presentation_agent"],  # failure note still formatted
+            answer_prefix="Could not analyse",
+        ),
+        series=["NOPE1", "NOPE2"],
+    ),
+]
