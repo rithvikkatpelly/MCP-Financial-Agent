@@ -664,6 +664,10 @@ npm run dev                          # http://localhost:5173
 The backend must be running and `CORS_ALLOWED_ORIGINS` must list the
 frontend's origin (the default already includes `http://localhost:5173`).
 
+Getting this pair onto the internet — Dockerfiles, hosting, prod env vars,
+the auth/rate-limit gaps to close first — is written up in
+[`DEPLOYMENT.md`](DEPLOYMENT.md).
+
 > `streamlit_app.py` (see [Running the demo UI](#running-the-demo-ui)) is a
 > separate, simpler demo that calls the tool modules **directly**, no HTTP.
 > The `backend/` + `frontend/` pair is the deployable web-app path.
