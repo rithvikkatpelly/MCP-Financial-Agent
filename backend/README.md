@@ -28,3 +28,15 @@ for `curl` examples and deployment notes.
 
 Runs against the built-in synthetic fixture unless `FRED_API_KEY` is set in
 `../.env`.
+
+## Docker
+
+Build context is the **repo root** (the API imports `src/`):
+
+```bash
+docker build -f backend/Dockerfile -t econ-data-api .
+docker run -p 8080:8080 -e CORS_ALLOWED_ORIGINS=http://localhost:5173 econ-data-api
+```
+
+`backend/requirements.txt` is the slim runtime subset the image installs.
+Full deployment notes: [`../DEPLOYMENT.md`](../DEPLOYMENT.md).

@@ -24,3 +24,15 @@ src/
 ```
 
 `npm run build` type-checks (`tsc -b`) and bundles to `dist/`.
+
+## Docker
+
+```bash
+docker build -f frontend/Dockerfile \
+  --build-arg VITE_API_BASE_URL=https://your-api.example.com \
+  -t econ-data-frontend ./frontend
+```
+
+`VITE_API_BASE_URL` is inlined at build time. Multi-stage: Vite build →
+nginx (`nginx.conf`). Or just deploy `dist/` to any static host. Full notes:
+[`../DEPLOYMENT.md`](../DEPLOYMENT.md).

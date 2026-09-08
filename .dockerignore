@@ -1,0 +1,25 @@
+# The build context for backend/Dockerfile is the repo root (the API imports
+# shared logic from src/). Keep the image to src/ + backend/ + deps.
+.git
+.github
+.venv
+venv
+**/__pycache__
+*.pyc
+.pytest_cache
+.ruff_cache
+
+# Not used by the API
+frontend
+streamlit_app.py
+examples
+evals
+tests
+docs
+
+# Secrets / local state
+.env
+.env.*
+*.sqlite
+*.log
+.cache

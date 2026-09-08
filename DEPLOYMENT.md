@@ -18,21 +18,26 @@ API"), production does not.
 
 ## 1. Backend — containerize + host
 
-Not committed yet:
+**`backend/Dockerfile`** and **`backend/requirements.txt`** (a slim runtime
+subset — `fastapi`, `uvicorn`, `pydantic`, `pydantic-settings`, `httpx`) are
+committed. The build context is the **repo root**, because the image needs
+both `src/` (shared tool logic) and `backend/`:
 
-- **`backend/Dockerfile`** — `python:3.12-slim`, `pip install -r requirements.txt`,
-  copy `src/` and `backend/`, `CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8080"]`
-  with `WORKDIR /app/backend`. Note the image needs **both** `src/` and
-  `backend/` because the API imports the shared tool logic from `src/`.
-- **`backend/.dockerignore`** — `.venv`, `__pycache__`, `frontend/`, `.git`,
-  `*.sqlite`, `*.log`.
-- A production ASGI setup: `uvicorn` alone is fine for low traffic; for real
-  load put it behind `gunicorn -k uvicorn.workers.UvicornWorker` or run
-  multiple `uvicorn --workers N`.
+```bash
+docker build -f backend/Dockerfile -t econ-data-api .
+docker run -p 8080:8080 -e CORS_ALLOWED_ORIGINS=http://localhost:5173 econ-data-api
+```
 
-Host options (any works — it's a stateless single container):
-Google Cloud Run, Fly.io, Railway, Render, an EC2/Fargate task. Cloud Run is
-the closest match to the UAC setup.
+Not done / left to you:
+
+- **Not build-tested** — there's no Docker in the dev environment. The slim
+  requirements were verified sufficient by running the API in a fresh venv
+  with only those five packages; the image itself needs a real `docker build`.
+- A production ASGI setup: bare `uvicorn` is fine for low traffic; for real
+  load run `uvicorn --workers N` or `gunicorn -k uvicorn.workers.UvicornWorker`.
+- Host options (any works — stateless single container): Google Cloud Run,
+  Fly.io, Railway, Render, an EC2/Fargate task. Cloud Run matches the UAC
+  setup and reads `$PORT` (the Dockerfile's `CMD` already honours it).
 
 **Health check:** point the platform's probe at `GET /health`.
 
@@ -55,16 +60,23 @@ survive restarts.
 
 ## 3. Frontend — build + host
 
-- **`frontend/Dockerfile`** (multi-stage: `node:20` → `npm ci && npm run build`
-  → copy `dist/` into `nginx:alpine`), **or** just deploy `dist/` to any
-  static host (Cloudflare Pages, Netlify, Vercel, S3 + CloudFront, Firebase
-  Hosting, GitHub Pages).
-- **`VITE_API_BASE_URL`** is read at **build time**, not runtime — set it in
-  the build environment (e.g. `VITE_API_BASE_URL=https://api.econ-data.example.com npm run build`)
-  or the platform's build-env settings. Rebuild to change it.
-- If you host the frontend behind nginx, add an SPA fallback
-  (`try_files $uri /index.html;`) — not strictly needed now (no client-side
-  routing) but standard.
+**`frontend/Dockerfile`** (multi-stage: `node:20-slim` → `npm ci && npm run
+build` → `nginx:alpine` serving `dist/`, with `frontend/nginx.conf`) is
+committed. **Or** skip Docker entirely and deploy `dist/` to any static host
+(Cloudflare Pages, Netlify, Vercel, S3 + CloudFront, Firebase Hosting, GitHub
+Pages) — it's just static files.
+
+```bash
+docker build -f frontend/Dockerfile \
+  --build-arg VITE_API_BASE_URL=https://api.econ-data.example.com \
+  -t econ-data-frontend ./frontend
+```
+
+- **`VITE_API_BASE_URL`** is inlined at **build time**, not runtime — pass it
+  as the `--build-arg` above, or set it in the static host's build-env
+  settings. Rebuild to change it.
+- Not build-tested (no Docker here); `npm run build` itself is exercised in
+  CI.
 - Consider `build.rollupOptions.output.manualChunks` to split the ~540 KB
   bundle (mostly recharts); cosmetic, not blocking.
 
