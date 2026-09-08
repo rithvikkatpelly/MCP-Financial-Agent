@@ -9,14 +9,23 @@ readme = "README.md"
 # and CI install). This file carries project metadata and tool config only.
 
 [tool.pytest.ini_options]
-pythonpath = ["src"]
+pythonpath = ["src", "backend"]
 testpaths = ["tests"]
 addopts = "-q"
+filterwarnings = [
+    # mcp's own FastMCP settings class has a forward-ref `lifespan` field;
+    # the warning fires only because pydantic-settings is now installed (for
+    # backend/core/config.py). Not our code.
+    "ignore:Field 'lifespan' has an incomplete definition:UserWarning",
+]
 
 [tool.ruff]
 line-length = 100
 target-version = "py311"
-extend-exclude = [".venv"]
+extend-exclude = [".venv", "frontend"]
+# Both are import roots (see pytest pythonpath) — keeps isort's first-party
+# detection stable no matter which directory ruff is invoked from.
+src = ["src", "backend"]
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP", "B", "SIM"]
@@ -28,3 +37,5 @@ select = ["E", "F", "I", "UP", "B", "SIM"]
 "evals/__init__.py" = ["E402"]
 # The demo UI puts src/ on sys.path before importing project modules.
 "streamlit_app.py" = ["E402"]
+# backend/app/__init__.py sets sys.path before importing core.config.
+"backend/app/__init__.py" = ["E402"]

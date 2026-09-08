@@ -18,6 +18,11 @@ venv/
 .venv/
 *.egg-info/
 
+# Node / frontend
+node_modules/
+frontend/dist/
+frontend/.env
+
 # OS/editor cruft
 .DS_Store
 .vscode/

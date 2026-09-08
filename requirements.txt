@@ -10,6 +10,13 @@ pydantic>=2.6.0
 # The default stub backend, the evals, and the tests need none of this.
 anthropic>=0.40.0
 
+# HTTP interface (backend/app) — a second, independently deployable surface
+# over the same src/tools.py logic the MCP server uses. The MCP server itself
+# (src/server.py) needs none of this.
+fastapi>=0.110.0
+uvicorn[standard]>=0.29.0
+pydantic-settings>=2.2.0
+
 # Dev / CI
 pytest>=8.0.0
 ruff>=0.6.0

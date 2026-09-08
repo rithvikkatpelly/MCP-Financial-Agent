@@ -36,6 +36,11 @@ reads as a development story rather than one drop.
 - [x] **Orchestrator routing eval** — 18 structural cases (single/comparison/
       cap/ambiguous/out-of-scope/injection/vague-date), 15 passing + 3 tracked
       `xfail` gaps
+- [x] **HTTP interface + web UI** — `backend/app` (FastAPI, one endpoint per
+      tool) is a second deployable surface over the same `src/tools.py` the MCP
+      server calls; `backend/core/config.py` centralizes config with
+      pydantic-settings. `frontend/` is a React + Vite page on top. `src/server.py`
+      is untouched and still runs standalone.
 - [x] **Second data source (news) + cross-source reasoning** — `news_client.py`
       mirrors `fred_client.py`; a News Agent runs concurrently with the Data
       Agent(s) under one `asyncio.gather`; the Analysis Agent separates

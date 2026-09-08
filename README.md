@@ -34,6 +34,7 @@ evaluation suite be hermetic and reproducible.
   - [6. Evaluation](#6-evaluation)
 - [Offline by default, live when you want it](#offline-by-default-live-when-you-want-it)
 - [Running it live](#running-it-live)
+- [Run the API](#run-the-api)
 - [Configuration](#configuration)
 - [Project layout](#project-layout)
 - [Testing](#testing)
@@ -615,6 +616,60 @@ print(trace.to_dict())   # tool sequence, grounding set, tokens, timing
 
 ---
 
+## Run the API
+
+`backend/` is a second interface over the **same** tool logic the MCP server
+uses — a FastAPI app, one endpoint per tool, independently deployable. It
+imports `src/tools.py` (which composes `fred_client` + `security` +
+`cost_tracker`); no logic is copied or moved, and `src/server.py` is
+unchanged.
+
+```bash
+pip install -r requirements.txt      # now also installs fastapi + uvicorn
+cd backend
+uvicorn app.main:app --reload        # http://127.0.0.1:8000  (docs at /docs)
+```
+
+| Method & path | Tool | Body / params |
+|---|---|---|
+| `POST /search` | `search_series` | `{"search_text": "core inflation"}` |
+| `POST /observations` | `get_series_observations` | `{"series_id","start_date","end_date","frequency"}` |
+| `POST /compare` | `compare_series` | `{"series_ids":[…≤4],"start_date","end_date","frequency"}` |
+| `GET /metadata/{series_id}` | `get_series_metadata` | — |
+| `GET /health` | — | reports `offline` (fixture) vs live |
+
+```bash
+curl -X POST http://127.0.0.1:8000/observations \
+  -H "Content-Type: application/json" \
+  -d '{"series_id": "UNRATE", "start_date": "2021-01-01", "end_date": "2024-01-01", "frequency": "m"}'
+```
+
+`src/tools.py`'s structured errors map to HTTP status codes — `validation_error`
+→ 422, unknown series → 404 (`{"error":"series_not_found","suggestion":…}`),
+`session_budget_exceeded` → 429, upstream failure → 502 — with the error dict
+preserved under `detail`. Runs offline against the synthetic fixture unless
+`FRED_API_KEY` is set.
+
+### Web UI
+
+`frontend/` is a minimal React + Vite + TypeScript page that calls the API
+over HTTP — a sidebar for the four tools, a line chart + raw table per result.
+
+```bash
+cd frontend
+npm install
+npm run dev                          # http://localhost:5173
+```
+
+The backend must be running and `CORS_ALLOWED_ORIGINS` must list the
+frontend's origin (the default already includes `http://localhost:5173`).
+
+> `streamlit_app.py` (see [Running the demo UI](#running-the-demo-ui)) is a
+> separate, simpler demo that calls the tool modules **directly**, no HTTP.
+> The `backend/` + `frontend/` pair is the deployable web-app path.
+
+---
+
 ## Configuration
 
 All optional; sensible defaults everywhere. See [`.env.example`](.env.example).
@@ -634,6 +689,7 @@ All optional; sensible defaults everywhere. See [`.env.example`](.env.example).
 | `TOOL_RATE_LIMIT_PER_MIN` | `120` | MCP-boundary rate limit |
 | `TOOL_RATE_LIMIT_BURST` | `30` | token-bucket capacity |
 | `AUDIT_LOG_PATH` | `audit.log` | where the audit log is written |
+| `CORS_ALLOWED_ORIGINS` | `localhost:5173,127.0.0.1:5173` | comma-separated browser origins allowed to call `backend/app` |
 
 ---
 
@@ -641,6 +697,15 @@ All optional; sensible defaults everywhere. See [`.env.example`](.env.example).
 
 ```
 streamlit_app.py    demo UI — the four FRED tools called directly (no MCP), validate → pre-flight → fetch → guardrail
+backend/            HTTP interface — a second, deployable surface over src/tools.py (MCP server unchanged)
+  app/
+    __init__.py     puts ../src on sys.path + loads .env into os.environ (runs before any src import)
+    main.py         FastAPI: /health, POST /search, POST /observations, POST /compare, GET /metadata/{id}
+    schemas.py      pydantic request/response models mirroring src/tools.py output
+  core/config.py    pydantic-settings, backed by the repo-root .env (FRED key, budget, CORS origins)
+frontend/           React + Vite + TS page that calls backend/app over HTTP (sidebar + chart + table per tool)
+  src/api/          fetch wrapper + one function per endpoint; types mirror backend/app/schemas.py
+  src/components/   one panel per tool + shared chart/table/error pieces
 src/
   server.py         MCP server (FastMCP): 5 tools + 1 resource, rate limit + audit at the boundary
   tools.py          the one implementation of the 5 tools + their Anthropic JSON schemas
@@ -678,7 +743,7 @@ examples/
   bench_parallel.py  sequential vs. parallel Data Agent latency, real numbers
   measure.py         regenerates docs/measurements.md from the offline fixture
 tests/  catalog, fred + news clients, security (incl. news injection), rate limit, audit,
-        both agent pipelines, routing eval, evals — 106 tests, hermetic, ~1.5s
+        both agent pipelines, routing eval, HTTP API, evals — 122 tests, hermetic, ~1.9s
 docs/
   architecture.md   diagrams + the guardrail-by-layer table
   measurements.md   generated context/cost numbers
