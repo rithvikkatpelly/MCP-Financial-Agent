@@ -35,6 +35,7 @@ evaluation suite be hermetic and reproducible.
 - [Offline by default, live when you want it](#offline-by-default-live-when-you-want-it)
 - [Running it live](#running-it-live)
 - [Run the API](#run-the-api)
+- [Deployment](#deployment)
 - [Configuration](#configuration)
 - [Project layout](#project-layout)
 - [Testing](#testing)
@@ -664,13 +665,57 @@ npm run dev                          # http://localhost:5173
 The backend must be running and `CORS_ALLOWED_ORIGINS` must list the
 frontend's origin (the default already includes `http://localhost:5173`).
 
-Getting this pair onto the internet — Dockerfiles, hosting, prod env vars,
-the auth/rate-limit gaps to close first — is written up in
-[`DEPLOYMENT.md`](DEPLOYMENT.md).
-
 > `streamlit_app.py` (see [Running the demo UI](#running-the-demo-ui)) is a
 > separate, simpler demo that calls the tool modules **directly**, no HTTP.
 > The `backend/` + `frontend/` pair is the deployable web-app path.
+
+---
+
+## Deployment
+
+`backend/` and `frontend/` each have a `Dockerfile` (repo root as the
+backend's build context, since the image needs both `src/` and `backend/`),
+and `.github/workflows/deploy.yml` builds both, pushes them to Artifact
+Registry, and deploys both to **Google Cloud Run** on every push to `main` —
+authenticating with Workload Identity Federation, no long-lived key in
+GitHub. Full one-time setup (GCP project, Artifact Registry, Secret Manager,
+service accounts, WIF, the exact GitHub secrets/variables to add) is in
+[`DEPLOYMENT.md`](DEPLOYMENT.md); nothing there has been run yet — no live
+deployment exists for this repo today.
+
+**Secrets:** the only one the deployed API needs is `FRED_API_KEY`, held in
+**Secret Manager** and wired into the Cloud Run service with
+`--set-secrets="FRED_API_KEY=fred-api-key:latest"` — it never appears as a
+plain environment variable, a Dockerfile `ENV`, or committed anywhere.
+`backend/core/config.py` needs no separate "production mode": pydantic-
+settings already prefers a real environment variable over `.env` over its
+default, and there's no `.env` in the container (`.dockerignore`), so Cloud
+Run's injected value resolves exactly like a local `.env` does in dev —
+only *where the value comes from* changes.
+
+**CI/CD trigger:** push to `main` → the workflow builds and deploys the
+backend → reads back its live URL → builds and deploys the frontend with
+that URL baked in (`VITE_API_BASE_URL` is a Vite build-time constant) →
+re-points the backend's `CORS_ALLOWED_ORIGINS` at the frontend's URL. The
+job summary prints both URLs.
+
+**Cloud Run URL format:** `https://<service-name>-<hash>.<region>.run.app`
+— e.g. `https://econ-data-api-a1b2c3d4e5-uc.a.run.app`. The `<hash>` is
+assigned by Cloud Run at first deploy, which is why the workflow reads it
+back with `gcloud run services describe` instead of guessing it.
+
+Once deployed, the same request as [Run the API](#run-the-api) above, against
+the real URL instead of `127.0.0.1`:
+
+```bash
+curl -X POST https://econ-data-api-a1b2c3d4e5-uc.a.run.app/observations \
+  -H "Content-Type: application/json" \
+  -d '{"series_id": "UNRATE", "start_date": "2021-01-01", "end_date": "2024-01-01", "frequency": "m"}'
+```
+
+The deploy is public and unauthenticated by design (no login system on this
+project) — see DEPLOYMENT.md's "Known gaps" for what that means and what to
+close first if this needs to hold up to real traffic.
 
 ---
 
