@@ -1,0 +1,121 @@
+name: Deploy to Cloud Run
+
+# Builds backend/ and frontend/ as Docker images, pushes them to Artifact
+# Registry, and deploys both to Cloud Run. Triggers on every push to main —
+# see DEPLOYMENT.md for the one-time GCP setup this depends on
+# (Artifact Registry repo, Secret Manager secret, service accounts, Workload
+# Identity Federation, and the GitHub secrets/variables referenced below).
+#
+# This does NOT touch src/server.py (the MCP server) or streamlit_app.py —
+# neither is meant to be hosted; see README.md "Offline by default, live
+# when you want it".
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch: {}
+
+env:
+  REGION: ${{ vars.GCP_REGION }}
+  PROJECT_ID: ${{ vars.GCP_PROJECT_ID }}
+  AR_REPO: ${{ vars.AR_REPO }}
+  BACKEND_SERVICE: ${{ vars.BACKEND_SERVICE }}
+  FRONTEND_SERVICE: ${{ vars.FRONTEND_SERVICE }}
+  FRED_API_KEY_SECRET: ${{ vars.FRED_API_KEY_SECRET }}
+
+permissions:
+  contents: read
+  id-token: write # required for keyless Workload Identity Federation auth
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Authenticate to Google Cloud
+        uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ secrets.WIF_PROVIDER }}
+          service_account: ${{ secrets.WIF_SERVICE_ACCOUNT }}
+
+      - name: Set up gcloud
+        uses: google-github-actions/setup-gcloud@v2
+
+      - name: Configure Docker for Artifact Registry
+        run: gcloud auth configure-docker "${REGION}-docker.pkg.dev" --quiet
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      # Build context is the repo ROOT, not backend/ — the API image needs
+      # both src/ (shared tool logic) and backend/ (see backend/Dockerfile).
+      - name: Build and push backend image
+        run: |
+          IMAGE="${REGION}-docker.pkg.dev/${PROJECT_ID}/${AR_REPO}/backend:${GITHUB_SHA}"
+          CACHE="${REGION}-docker.pkg.dev/${PROJECT_ID}/${AR_REPO}/backend:buildcache"
+          docker buildx build . \
+            --file backend/Dockerfile \
+            --tag "$IMAGE" \
+            --cache-from "type=registry,ref=$CACHE" \
+            --cache-to "type=registry,ref=$CACHE,mode=max,image-manifest=true,oci-mediatypes=true" \
+            --provenance=false \
+            --push
+          echo "BACKEND_IMAGE=$IMAGE" >> "$GITHUB_ENV"
+
+      - name: Deploy backend to Cloud Run
+        run: |
+          gcloud run deploy "$BACKEND_SERVICE" \
+            --image="$BACKEND_IMAGE" \
+            --region="$REGION" \
+            --allow-unauthenticated \
+            --memory=512Mi \
+            --cpu=1 \
+            --min-instances=0 \
+            --max-instances=3 \
+            --set-env-vars="FRED_OFFLINE=0,SESSION_TOKEN_BUDGET=50000" \
+            --set-secrets="FRED_API_KEY=${FRED_API_KEY_SECRET}:latest"
+
+      - name: Capture backend URL
+        run: |
+          BACKEND_URL=$(gcloud run services describe "$BACKEND_SERVICE" \
+            --region="$REGION" --format='value(status.url)')
+          echo "BACKEND_URL=$BACKEND_URL" >> "$GITHUB_ENV"
+
+      - name: Build and push frontend image
+        run: |
+          IMAGE="${REGION}-docker.pkg.dev/${PROJECT_ID}/${AR_REPO}/frontend:${GITHUB_SHA}"
+          CACHE="${REGION}-docker.pkg.dev/${PROJECT_ID}/${AR_REPO}/frontend:buildcache"
+          docker buildx build ./frontend \
+            --build-arg VITE_API_BASE_URL="$BACKEND_URL" \
+            --tag "$IMAGE" \
+            --cache-from "type=registry,ref=$CACHE" \
+            --cache-to "type=registry,ref=$CACHE,mode=max,image-manifest=true,oci-mediatypes=true" \
+            --provenance=false \
+            --push
+          echo "FRONTEND_IMAGE=$IMAGE" >> "$GITHUB_ENV"
+
+      - name: Deploy frontend to Cloud Run
+        run: |
+          gcloud run deploy "$FRONTEND_SERVICE" \
+            --image="$FRONTEND_IMAGE" \
+            --region="$REGION" \
+            --allow-unauthenticated \
+            --memory=256Mi \
+            --cpu=1 \
+            --min-instances=0 \
+            --max-instances=2
+
+      - name: Point backend CORS at the deployed frontend
+        run: |
+          FRONTEND_URL=$(gcloud run services describe "$FRONTEND_SERVICE" \
+            --region="$REGION" --format='value(status.url)')
+          gcloud run services update "$BACKEND_SERVICE" \
+            --region="$REGION" \
+            --update-env-vars="CORS_ALLOWED_ORIGINS=$FRONTEND_URL"
+          {
+            echo "### Deployed"
+            echo "- Frontend: $FRONTEND_URL"
+            echo "- Backend: $BACKEND_URL"
+          } >> "$GITHUB_STEP_SUMMARY"

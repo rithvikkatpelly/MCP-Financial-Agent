@@ -4,7 +4,18 @@ pydantic-settings, backed by the repo-root ``.env`` (the same file the MCP
 server and the agents read). This is the typed view of configuration; the
 older modules under ``src/`` still read ``os.environ`` directly at import
 time, so :meth:`Settings.apply_to_environ` pushes these values back out
-before those modules are imported (see ``backend/app/_bootstrap.py``).
+before those modules are imported (see ``backend/app/__init__.py``).
+
+Local dev vs. production: pydantic-settings resolves each field from, in
+order, (1) a real environment variable, (2) ``.env``, (3) the default above —
+the first one present wins. Locally that means ``.env`` (gitignored, never
+committed). In the deployed container there is no ``.env`` file at all (see
+``.dockerignore``): Cloud Run injects ``FRED_API_KEY`` as a real environment
+variable, sourced from Secret Manager via the `--set-secrets` flag in
+``.github/workflows/deploy.yml`` (`FRED_API_KEY=<secret-name>:latest`), so it
+resolves at step (1) with no code path or config difference between the two —
+only where the value physically comes from changes. See DEPLOYMENT.md for the
+one-time Secret Manager setup.
 """
 
 from __future__ import annotations
