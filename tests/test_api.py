@@ -8,6 +8,8 @@ Hermetic via the autouse fixture in conftest.py (FRED_OFFLINE=1, etc.).
 `backend/` is on sys.path through `[tool.pytest.ini_options] pythonpath`.
 """
 
+import json
+
 import pytest
 from fastapi.testclient import TestClient
 
@@ -19,10 +21,12 @@ def client():
     return TestClient(app)
 
 
-def test_health_reports_offline_under_the_fixture(client):
+def test_health_reports_offline_and_key_presence_under_the_fixture(client):
     body = client.get("/health").json()
     assert body["status"] == "ok"
     assert body["offline"] is True
+    # conftest's hermetic fixture deletes FRED_API_KEY for every test.
+    assert body["fred_api_key_configured"] is False
 
 
 def test_search_returns_candidates_never_observations(client):
@@ -59,6 +63,21 @@ def test_compare_aligns_multiple_series(client):
     assert set(r.json()["series"]) == {"UNRATE", "CPIAUCSL"}
 
 
+def test_search_rejects_empty_search_text(client):
+    r = client.post("/search", json={"search_text": ""})
+    # Caught by SearchRequest's own min_length=1, before tools.py ever runs —
+    # FastAPI's own validation error shape, not tools.py's {"error": ...}.
+    assert r.status_code == 422
+
+
+def test_metadata_normal_series_has_the_expected_shape(client):
+    r = client.get("/metadata/GDP")
+    assert r.status_code == 200
+    body = r.json()
+    assert set(body) == {"series_id", "title", "units", "frequency", "last_updated", "notes"}
+    assert set(body["notes"]) == {"untrusted_source", "untrusted_source_text", "note"}
+
+
 def test_metadata_notes_come_back_wrapped_as_untrusted_data(client):
     r = client.get("/metadata/INJTEST")
     assert r.status_code == 200
@@ -87,6 +106,40 @@ def test_unknown_series_is_a_404_with_a_search_hint(client):
     body = r.json()["detail"]
     assert body["error"] == "series_not_found"
     assert "/search" in body["suggestion"]
+
+
+def test_metadata_rejects_a_malformed_series_id(client):
+    r = client.get("/metadata/not a real id!!")
+    assert r.status_code == 422
+    assert r.json()["detail"]["error"] == "validation_error"
+
+
+def test_compare_rejects_more_than_four_series(client):
+    r = client.post(
+        "/compare",
+        json={
+            "series_ids": ["UNRATE", "CPIAUCSL", "GDP", "DGS10", "FEDFUNDS"],
+            "start_date": "2021-01-01",
+            "end_date": "2022-01-01",
+        },
+    )
+    # Caught by CompareRequest's own max_length=4, before tools.py runs.
+    assert r.status_code == 422
+
+
+def test_compare_rejects_a_malformed_series_id_in_the_list(client):
+    r = client.post(
+        "/compare",
+        json={
+            "series_ids": ["UNRATE", "not a real id!!"],
+            "start_date": "2021-01-01",
+            "end_date": "2022-01-01",
+        },
+    )
+    # This one passes the schema (<=4 items) and is caught by
+    # security.validate_series_id inside tools.compare_series instead.
+    assert r.status_code == 422
+    assert r.json()["detail"]["error"] == "validation_error"
 
 
 def test_date_range_past_the_guardrail_is_422(client):
@@ -119,3 +172,38 @@ def test_api_and_mcp_share_one_tool_implementation(client):
     import server
 
     assert app.main.tools is server.tools
+
+
+def test_requests_emit_one_structured_json_log_line(client):
+    """Every request logs one JSON line (method, path, status, latency) —
+    what Cloud Logging picks up automatically from Cloud Run's stdout, no
+    extra agent/config on this end. Verified by attaching a collector
+    straight to the app's logger (robust across pytest's own stdout/fd
+    capturing, unlike asserting against capsys/capfd against a stream a
+    module-level handler bound once at import time) and parsing what it
+    actually received, not just checking a mock was called."""
+    import logging as _logging
+
+    from app.main import logger as api_logger
+
+    records: list[str] = []
+
+    class _Collect(_logging.Handler):
+        def emit(self, record: _logging.LogRecord) -> None:
+            records.append(self.format(record))
+
+    collector = _Collect()
+    collector.setFormatter(api_logger.handlers[0].formatter)
+    api_logger.addHandler(collector)
+    try:
+        client.post("/search", json={"search_text": "unemployment"})
+    finally:
+        api_logger.removeHandler(collector)
+
+    assert records, "expected at least one log line"
+    entry = json.loads(records[-1])
+    assert entry["severity"] == "INFO"
+    assert entry["method"] == "POST"
+    assert entry["path"] == "/search"
+    assert entry["status_code"] == 200
+    assert isinstance(entry["duration_ms"], (int, float))
