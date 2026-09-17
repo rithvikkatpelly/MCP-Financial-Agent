@@ -625,6 +625,19 @@ imports `src/tools.py` (which composes `fred_client` + `security` +
 `cost_tracker`); no logic is copied or moved, and `src/server.py` is
 unchanged.
 
+**Two separate interfaces to one core, not two implementations:**
+
+| | `src/server.py` | `backend/app` |
+|---|---|---|
+| Protocol | MCP over stdio | HTTP/JSON over the network |
+| Client | Claude Desktop (one process per client, spawned locally) | any HTTP client — the `frontend/` React app, `curl`, a browser |
+| Deploys | Never — runs next to the client that spawned it | Cloud Run (or anywhere that runs a container); see [Deployment](#deployment) |
+| Tool logic | `src/tools.py` | the same `src/tools.py` |
+
+Both are thin, protocol-specific wrappers; `src/tools.py` is the only place
+the FRED-fetch → validate → guardrail logic actually lives, so the two can't
+drift apart.
+
 ```bash
 pip install -r requirements.txt      # now also installs fastapi + uvicorn
 cd backend
