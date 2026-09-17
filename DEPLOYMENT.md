@@ -19,8 +19,16 @@ frontend/ (Cloud Run, nginx) ──HTTP──▶ backend/app (Cloud Run, FastAPI
 - CORS (`backend/app/main.py` + `CORS_ALLOWED_ORIGINS` in
   `backend/core/config.py`) — already wired, just needs the deployed
   frontend's URL.
+- `GET /health` — reports `status`, whether `FRED_API_KEY` actually resolved
+  (`fred_api_key_configured`, never the value itself), and `offline`. No
+  database in this project, so there's nothing else to check.
+- Structured JSON logging (`backend/app/main.py`) — one line per request
+  (method, path, status, latency) to stdout, which Cloud Run ships to Cloud
+  Logging automatically; no sidecar or extra config needed on this end.
 - `.github/workflows/deploy.yml` — builds both images, pushes to Artifact
-  Registry, deploys both to Cloud Run, on every push to `main`.
+  Registry, deploys both to Cloud Run on every push to `main`, and wires the
+  backend's `--startup-probe` to `GET /health` (so a revision that boots but
+  can't actually serve never receives traffic).
 
 **What this document covers:** the one-time GCP setup that workflow depends
 on. After it's done once, deploying is just `git push`. Nothing in this
@@ -206,7 +214,8 @@ it also has `workflow_dispatch`) and watch **Deploy to Cloud Run**. It:
 1. Builds `backend/Dockerfile` (context: repo root) and pushes it to
    Artifact Registry.
 2. Deploys it to Cloud Run as `econ-data-api`, wiring `FRED_API_KEY` from
-   Secret Manager.
+   Secret Manager and a `--startup-probe` against `GET /health` — a
+   revision only starts receiving traffic once that returns 200.
 3. Builds `frontend/Dockerfile` with `VITE_API_BASE_URL` set to the
    backend's just-deployed URL, pushes and deploys it as
    `econ-data-frontend`.

@@ -74,6 +74,8 @@ jobs:
             --cpu=1 \
             --min-instances=0 \
             --max-instances=3 \
+            --port=8080 \
+            --startup-probe=httpGet.path=/health,httpGet.port=8080,initialDelaySeconds=0,timeoutSeconds=3,periodSeconds=3,failureThreshold=3 \
             --set-env-vars="FRED_OFFLINE=0,SESSION_TOKEN_BUDGET=50000" \
             --set-secrets="FRED_API_KEY=${FRED_API_KEY_SECRET}:latest"
 

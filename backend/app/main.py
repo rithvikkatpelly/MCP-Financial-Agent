@@ -20,9 +20,13 @@ Interactive docs at http://127.0.0.1:8000/docs
 
 from __future__ import annotations
 
+import json
 import logging
+import os
+import sys
+import time
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 
 import fred_client
@@ -36,8 +40,31 @@ from app.schemas import (
 )
 from core.config import get_settings
 
-logger = logging.getLogger(__name__)
 settings = get_settings()
+
+
+# --- Structured logging ---------------------------------------------------
+#
+# One JSON object per line on stdout. Cloud Run ships container stdout/stderr
+# to Cloud Logging automatically (no agent/config needed on this end); when a
+# line is valid JSON, Cloud Logging parses it into jsonPayload fields instead
+# of one opaque textPayload string, and a top-level "severity" key maps onto
+# the LogEntry's own severity field. Locally this just prints JSON lines —
+# same code path, easy to pipe through `jq`.
+class _JSONFormatter(logging.Formatter):
+    def format(self, record: logging.LogRecord) -> str:
+        payload = {"severity": record.levelname, "message": record.getMessage()}
+        payload.update(getattr(record, "fields", {}))
+        return json.dumps(payload)
+
+
+logger = logging.getLogger("econ_data_api")
+logger.setLevel(logging.INFO)
+logger.propagate = False
+if not logger.handlers:
+    _handler = logging.StreamHandler(sys.stdout)
+    _handler.setFormatter(_JSONFormatter())
+    logger.addHandler(_handler)
 
 app = FastAPI(
     title=settings.api_title,
@@ -55,6 +82,32 @@ app.add_middleware(
     allow_methods=["GET", "POST"],
     allow_headers=["*"],
 )
+
+
+@app.middleware("http")
+async def log_requests(request: Request, call_next):
+    started = time.perf_counter()
+    try:
+        response = await call_next(request)
+    except Exception:
+        logger.exception(
+            "unhandled exception",
+            extra={"fields": {"method": request.method, "path": request.url.path}},
+        )
+        raise
+    duration_ms = round((time.perf_counter() - started) * 1000, 2)
+    logger.info(
+        "request",
+        extra={
+            "fields": {
+                "method": request.method,
+                "path": request.url.path,
+                "status_code": response.status_code,
+                "duration_ms": duration_ms,
+            }
+        },
+    )
+    return response
 
 
 # --- Structured-error translation ----------------------------------------
@@ -99,9 +152,25 @@ def _unwrap(result: dict) -> dict:
 
 @app.get("/health", tags=["meta"])
 def health() -> dict:
-    """Liveness check. ``offline`` reflects whether FRED calls are served from
-    the synthetic fixture (no ``FRED_API_KEY``) or the live API."""
-    return {"status": "ok", "offline": fred_client._offline()}
+    """Liveness/startup probe target (see .github/workflows/deploy.yml's
+    --startup-probe). Confirms config actually loaded, not just that the
+    process is up:
+
+    - ``fred_api_key_configured``: whether FRED_API_KEY resolved to a real
+      value (never the value itself) — the thing most likely to be
+      misconfigured on a fresh deploy (wrong Secret Manager binding, etc).
+    - ``offline``: whether calls are actually being served from the
+      synthetic fixture or the live FRED API — the two can disagree, e.g. a
+      key is set but FRED_OFFLINE=1 forces the fixture anyway.
+
+    There's no database in this project (backend/app is stateless — FRED is
+    the only backing store), so there's nothing else to check here.
+    """
+    return {
+        "status": "ok",
+        "fred_api_key_configured": bool(os.environ.get("FRED_API_KEY")),
+        "offline": fred_client._offline(),
+    }
 
 
 @app.post("/search", response_model=SearchResponse, tags=["tools"])
