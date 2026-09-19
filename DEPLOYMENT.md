@@ -333,6 +333,14 @@ want the cache to survive restarts.
   or it's an open proxy to your FRED key (see §9 above for how bad that
   actually is). The MCP server's `rate_limit.guard` could be lifted into a
   FastAPI dependency — same token-bucket, keyed on client IP or an API key.
+- **The landing page spends from that shared budget.** The hero carousel
+  fetches seven series (~1.7k of the default 50k tokens) on a browser's first
+  visit, then caches them in `localStorage` for six hours. That's fine for a
+  demo, but with many first-time visitors it will drain the process-wide
+  allowance and later requests get a 429 (the UI shows "The demo's data
+  allowance is used up" and the rest of the page keeps working). Per-client
+  budgets, or a server-side snapshot endpoint that doesn't bill the session,
+  are the real fix.
 - **The token budget is process-global.** One busy client can exhaust it for
   everyone until the process restarts. For multi-user hosting, key the
   budget by session/API-key instead of the module-level singleton (there's a

@@ -666,8 +666,29 @@ preserved under `detail`. Runs offline against the synthetic fixture unless
 
 ### Web UI
 
-`frontend/` is a minimal React + Vite + TypeScript page that calls the API
-over HTTP — a sidebar for the four tools, a line chart + raw table per result.
+`frontend/` is a React + Vite + TypeScript single page that calls the API
+over HTTP. It turns the four tools into something a non-developer can use:
+
+![Landing page — hero carousel of live indicator cards](docs/images/ui-home.png)
+
+- **Hero carousel** of seven headline indicators (unemployment, CPI, core CPI,
+  core PCE, fed funds, 10-year yield, GDP), each with a sparkline, the latest
+  reading and its change. Click the centre card to chart it; `←`/`→` browse.
+- **Explorer** with plain-language tabs — *Chart a series*, *Compare*,
+  *Find a series*, *Series details* — mapped one-to-one onto
+  `/observations`, `/compare`, `/search` and `/metadata`. Time-range presets
+  (1Y/5Y/10Y/20Y) replace raw date pickers; "Automatic" detail picks each
+  series' native frequency (FRED can only *lower* a frequency, so asking for
+  monthly GDP would fail live); compared series are **rebased to 100** by
+  default so a rate near 4 and an index near 300 can share an axis.
+- Stats (latest / change / high / low), CSV download, a "Copy as curl" for
+  developers, and errors written in words ("We couldn't find that series")
+  rather than status codes.
+- A "Demo data" banner whenever the API is serving the synthetic fixture, so
+  nobody mistakes sample numbers for real ones; provider notes are rendered as
+  inert quoted text.
+
+![Explorer — comparing two series, rebased to 100](docs/images/ui-explorer.png)
 
 ```bash
 cd frontend
@@ -676,7 +697,10 @@ npm run dev                          # http://localhost:5173
 ```
 
 The backend must be running and `CORS_ALLOWED_ORIGINS` must list the
-frontend's origin (the default already includes `http://localhost:5173`).
+frontend's origin (the default already includes `http://localhost:5173`;
+`VITE_API_BASE_URL` points the page at a different API). The landing page
+fetches the seven featured series once and caches them in the browser for six
+hours, because the API's token budget is shared per process.
 
 > `streamlit_app.py` (see [Running the demo UI](#running-the-demo-ui)) is a
 > separate, simpler demo that calls the tool modules **directly**, no HTTP.
@@ -765,7 +789,7 @@ backend/            HTTP interface — a second, deployable surface over src/too
     main.py         FastAPI: /health, POST /search, POST /observations, POST /compare, GET /metadata/{id}
     schemas.py      pydantic request/response models mirroring src/tools.py output
   core/config.py    pydantic-settings, backed by the repo-root .env (FRED key, budget, CORS origins)
-frontend/           React + Vite + TS page that calls backend/app over HTTP (sidebar + chart + table per tool)
+frontend/           React + Vite + TS web app over backend/app: hero carousel, tabbed explorer, charts, CSV export
   src/api/          fetch wrapper + one function per endpoint; types mirror backend/app/schemas.py
   src/components/   one panel per tool + shared chart/table/error pieces
 src/

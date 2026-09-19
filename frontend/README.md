@@ -1,8 +1,9 @@
 # Econ Data frontend (`frontend/`)
 
-Minimal React + Vite + TypeScript UI that calls the FastAPI backend
-(`backend/app`) over HTTP — one page, a sidebar to switch between the four
-FRED tools, a recharts line chart + raw table per result.
+React + Vite + TypeScript web app over the FastAPI backend (`backend/app`):
+a hero carousel of headline indicators, a tabbed explorer (chart / compare /
+find / details), recharts line charts, CSV export. Dark theme with a lime
+accent, responsive down to phone width, keyboard- and screen-reader-friendly.
 
 ```bash
 cd frontend
@@ -17,22 +18,22 @@ default already lists `http://localhost:5173`.
 
 ```
 src/
-  api/client.ts   fetch wrapper + one function per endpoint
-  api/types.ts     mirrors backend/app/schemas.py
-  components/       one panel per tool + shared chart/table/error pieces
-  App.tsx          sidebar + active panel + API health check
+  api/client.ts     fetch wrapper + one function per endpoint
+  api/types.ts      mirrors backend/app/schemas.py
+  catalog.ts        featured series + example topics (display copy only)
+  format.ts         units-aware formatting, change (pts vs %), frequency rules
+  dates.ts          range presets (1Y/5Y/10Y/20Y) and helpers
+  useSnapshots.ts   hero data: fetched once, cached 6h in localStorage
+  explorer.ts       the "open the explorer with X" request type
+  components/
+    Hero, Comparisons, Marquee, HowItWorks, CtaBanner, Nav, Footer   landing sections
+    Explorer + Chart/Compare/Search/Details panels                    the tools
+    SeriesChart, Sparkline, controls, common                          shared pieces
+  App.tsx           page composition + API health/"demo data" banner
 ```
 
-`npm run build` type-checks (`tsc -b`) and bundles to `dist/`.
-
-## Docker
-
-```bash
-docker build -f frontend/Dockerfile \
-  --build-arg VITE_API_BASE_URL=https://your-api.example.com \
-  -t econ-data-frontend ./frontend
-```
-
-`VITE_API_BASE_URL` is inlined at build time. Multi-stage: Vite build →
-nginx (`nginx.conf`). Or just deploy `dist/` to any static host. Full notes:
-[`../DEPLOYMENT.md`](../DEPLOYMENT.md).
+Design notes: series are never charted on a zero-based axis (CPI ~300 would
+look flat); compared series are rebased to 100 by default; "Automatic"
+frequency uses each series' native one because FRED can only *lower* a
+frequency; the marquee pauses on hover and all motion respects
+`prefers-reduced-motion`.
