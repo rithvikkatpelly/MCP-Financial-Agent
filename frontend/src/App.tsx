@@ -1,71 +1,64 @@
-import { useEffect, useState } from "react";
-import { ComparePanel } from "./components/ComparePanel";
-import { MetadataPanel } from "./components/MetadataPanel";
-import { ObservationsPanel } from "./components/ObservationsPanel";
-import { SearchPanel } from "./components/SearchPanel";
-
-const API_BASE_URL: string =
-  import.meta.env.VITE_API_BASE_URL ?? "http://127.0.0.1:8000";
-
-const TOOLS = [
-  { id: "search", label: "search_series", Panel: SearchPanel },
-  { id: "observations", label: "get_series_observations", Panel: ObservationsPanel },
-  { id: "compare", label: "compare_series", Panel: ComparePanel },
-  { id: "metadata", label: "get_series_metadata", Panel: MetadataPanel },
-] as const;
+import { useCallback, useEffect, useState } from "react";
+import { API_BASE_URL } from "./api/client";
+import { Comparisons } from "./components/Comparisons";
+import { CtaBanner } from "./components/CtaBanner";
+import { Explorer } from "./components/Explorer";
+import { Footer } from "./components/Footer";
+import { Hero } from "./components/Hero";
+import { HowItWorks } from "./components/HowItWorks";
+import { Marquee } from "./components/Marquee";
+import { Nav, type ApiState } from "./components/Nav";
+import type { ExplorerRequest, OpenExplorer } from "./explorer";
+import { useSnapshots } from "./useSnapshots";
 
 export default function App() {
-  const [active, setActive] = useState<(typeof TOOLS)[number]["id"]>("search");
-  const [health, setHealth] = useState<"?" | "up" | "down">("?");
-  const [offline, setOffline] = useState<boolean | null>(null);
+  const [api, setApi] = useState<ApiState>({ status: "checking" });
+  const [request, setRequest] = useState<ExplorerRequest | null>(null);
+  const { items, loading } = useSnapshots();
 
   useEffect(() => {
     fetch(`${API_BASE_URL}/health`)
       .then((r) => (r.ok ? r.json() : Promise.reject()))
-      .then((b) => {
-        setHealth("up");
-        setOffline(Boolean(b.offline));
-      })
-      .catch(() => setHealth("down"));
+      .then((b) => setApi({ status: "up", offline: Boolean(b.offline) }))
+      .catch(() => setApi({ status: "down" }));
   }, []);
 
-  const Panel = TOOLS.find((t) => t.id === active)!.Panel;
+  const open: OpenExplorer = useCallback((req) => {
+    setRequest({ ...req, nonce: Date.now() } as ExplorerRequest);
+    const reduce = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+    document.getElementById("explore")?.scrollIntoView({ behavior: reduce ? "auto" : "smooth", block: "start" });
+  }, []);
 
   return (
-    <div className="app">
-      <aside className="sidebar">
-        <h1>Econ Data</h1>
-        <p className="sidebar-sub">The four FRED tools, over HTTP.</p>
-        <nav>
-          {TOOLS.map((t) => (
-            <button
-              key={t.id}
-              className={t.id === active ? "active" : ""}
-              onClick={() => setActive(t.id)}
-            >
-              {t.label}
-            </button>
-          ))}
-        </nav>
-        <div className="api-status">
-          <span className={`dot ${health}`} />
-          {health === "up" && (
-            <span>
-              API up{offline ? " · offline fixture" : " · live FRED"}
-            </span>
-          )}
-          {health === "down" && <span>API unreachable — is uvicorn running?</span>}
-          {health === "?" && <span>checking API…</span>}
+    <>
+      <a className="skip" href="#explore">
+        Skip to the explorer
+      </a>
+      {api.status === "up" && api.offline && (
+        <div className="banner" role="note">
+          <strong>Demo mode</strong> — you're seeing built-in sample numbers, not real economic figures.
         </div>
-        <p className="sidebar-foot">
-          Calls the FastAPI backend (<code>backend/app</code>), which runs the
-          same <code>src/tools.py</code> logic as the MCP server.
-        </p>
-      </aside>
-
+      )}
+      {api.status === "down" && (
+        <div className="banner banner-bad" role="alert">
+          <strong>Can't reach the data service.</strong> If you're running locally, start the API:{" "}
+          <code>cd backend &amp;&amp; uvicorn app.main:app</code>
+        </div>
+      )}
+      <Nav api={api} />
       <main>
-        <Panel />
+        <Hero items={items} loading={loading} open={open} />
+        <div className="container">
+          <Comparisons items={items} loading={loading} open={open} />
+          <Explorer request={request} open={open} />
+        </div>
+        <Marquee open={open} />
+        <div className="container">
+          <HowItWorks />
+          <CtaBanner />
+        </div>
       </main>
-    </div>
+      <Footer />
+    </>
   );
 }

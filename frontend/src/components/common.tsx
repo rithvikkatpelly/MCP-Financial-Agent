@@ -1,16 +1,43 @@
-import type { ReactNode } from "react";
+import { useState, type ReactNode } from "react";
 import { ApiError } from "../api/client";
-import type { CostInfo } from "../api/types";
 
+/** Turn an API/network failure into words a non-developer can act on. */
 export function ErrorNotice({ error }: { error: unknown }) {
   let title = "Something went wrong";
   let detail: string | undefined;
-  let suggestion: string | undefined;
+  let hint: string | undefined;
 
   if (error instanceof ApiError) {
-    title = error.body?.error?.replace(/_/g, " ") ?? `HTTP ${error.status}`;
+    const code = error.body?.error;
     detail = error.body?.detail ?? undefined;
-    suggestion = error.body?.suggestion ?? undefined;
+    hint = error.body?.suggestion ?? undefined;
+    switch (code) {
+      case "validation_error":
+        title = "That input doesn't look right";
+        break;
+      case "series_not_found":
+        title = "We couldn't find that series";
+        hint = hint ?? "Use “Find a series” to look one up by name.";
+        break;
+      case "session_budget_exceeded":
+        title = "The demo's data allowance is used up";
+        hint = "Try a shorter date range, or come back a little later.";
+        break;
+      case "fred_api_error":
+        title = "The data provider had a problem";
+        hint = "This is usually temporary — try again in a moment.";
+        break;
+      default:
+        title = code ? code.replace(/_/g, " ") : `Request failed (${error.status})`;
+    }
+    if (error.status === 422 && !error.body) {
+      title = "That input doesn't look right";
+      detail = "Check the fields above and try again.";
+    }
+  } else if (error instanceof TypeError) {
+    title = "Can't reach the API";
+    detail = "The data service didn't respond.";
+    hint = "If you're running locally, start it with `uvicorn app.main:app` in backend/.";
   } else if (error instanceof Error) {
     detail = error.message;
   }
@@ -19,24 +46,13 @@ export function ErrorNotice({ error }: { error: unknown }) {
     <div className="notice notice-error" role="alert">
       <strong>{title}</strong>
       {detail && <p>{detail}</p>}
-      {suggestion && <p className="notice-suggestion">{suggestion}</p>}
+      {hint && <p className="notice-hint">{hint}</p>}
     </div>
   );
 }
 
-export function CostBadge({ cost, note }: { cost?: CostInfo; note?: string }) {
-  if (!cost && !note) return null;
-  return (
-    <p className="cost-badge">
-      {cost && (
-        <>
-          guardrail: ~{cost.estimated_tokens} tokens · budget remaining{" "}
-          {cost.budget_remaining}
-        </>
-      )}
-      {note && <span className="cost-note"> · {note}</span>}
-    </p>
-  );
+export function Skeleton({ height = 240 }: { height?: number }) {
+  return <div className="skeleton" style={{ height }} aria-busy="true" aria-label="Loading" />;
 }
 
 export function DataTable({ columns, rows }: { columns: string[]; rows: (string | number)[][] }) {
@@ -64,19 +80,51 @@ export function DataTable({ columns, rows }: { columns: string[]; rows: (string 
   );
 }
 
-export function Field({ label, children }: { label: string; children: ReactNode }) {
+export function Field({
+  label,
+  hint,
+  children,
+  grow,
+}: {
+  label: string;
+  hint?: string;
+  children: ReactNode;
+  grow?: boolean;
+}) {
   return (
-    <label className="field">
-      <span>{label}</span>
+    <label className={`field${grow ? " field-grow" : ""}`}>
+      <span className="field-label">{label}</span>
       {children}
+      {hint && <span className="field-hint">{hint}</span>}
     </label>
   );
 }
 
-export const FREQUENCIES: { value: string; label: string }[] = [
-  { value: "d", label: "daily" },
-  { value: "w", label: "weekly" },
-  { value: "m", label: "monthly" },
-  { value: "q", label: "quarterly" },
-  { value: "a", label: "annual" },
-];
+export function Chip({ children, tone }: { children: ReactNode; tone?: "lime" }) {
+  return <span className={`chip${tone ? ` chip-${tone}` : ""}`}>{children}</span>;
+}
+
+export function ToolTag({ children }: { children: ReactNode }) {
+  return <code className="tool-tag">{children}</code>;
+}
+
+export function CopyButton({ text, label = "Copy" }: { text: string; label?: string }) {
+  const [copied, setCopied] = useState(false);
+  return (
+    <button
+      type="button"
+      className="btn btn-ghost btn-sm"
+      onClick={async () => {
+        try {
+          await navigator.clipboard.writeText(text);
+          setCopied(true);
+          setTimeout(() => setCopied(false), 1600);
+        } catch {
+          /* clipboard blocked — nothing useful to do */
+        }
+      }}
+    >
+      {copied ? "Copied ✓" : label}
+    </button>
+  );
+}
